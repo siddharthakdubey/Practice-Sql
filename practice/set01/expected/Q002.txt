@@ -1,0 +1,6 @@
+﻿ProductID|ProductName|Category|UnitPrice
+---------|-----------|--------|---------
+6|Bed Sheet Set|Home|1799.00
+5|Table Lamp|Home|1199.00
+1|Wireless Mouse|Electronics|799.00
+17|Desk Organizer|Home|699.00

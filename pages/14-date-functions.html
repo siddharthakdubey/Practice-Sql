@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Date and time functions</title><link rel="stylesheet" href="../assets/style.css"></head>
+<body data-page="14-date-functions"><main>
+<h1>Date and time functions</h1>
+<p class="lead">Get "now", pull out parts, add and subtract time, count differences, format, and filter by period correctly.</p>
+<div class="goals"><b>After this topic you will</b> use GETDATE, YEAR/MONTH/DAY, DATEPART, DATENAME, EOMONTH, DATEADD, DATEDIFF, FORMAT/CONVERT, and write date filters that are both correct and fast.</div>
+<div class="tbl" data-src="orders" data-cols="OrderID,OrderDate,ShipDate,OrderStatus,Sales"></div>
+
+<h2>Date types</h2>
+<table class="cmp">
+<tr><th>Type</th><th>Holds</th><th>Example</th></tr>
+<tr><td><code>DATE</code></td><td>date only</td><td>2025-03-15</td></tr>
+<tr><td><code>TIME</code></td><td>time only</td><td>14:30:00.123</td></tr>
+<tr><td><code>DATETIME2(n)</code></td><td>date + time, precision n (0-7)</td><td>2025-03-15 14:30:00.1234567</td></tr>
+<tr><td><code>DATETIMEOFFSET</code></td><td>date + time + time-zone offset</td><td>2025-03-15 14:30 +05:30</td></tr>
+<tr><td><code>DATETIME</code> (old)</td><td>3 ms precision, limited range</td><td>avoid in new designs</td></tr>
+</table>
+<div class="callout tip"><b>Banking habit</b>Store timestamps in UTC (<code>SYSUTCDATETIME()</code>) and convert at the edges, exactly as this portal project does.</div>
+
+<h2>Now</h2>
+<pre class="sql">
+SELECT GETDATE()            -- current server date+time (DATETIME)
+     , SYSDATETIME()        -- more precise (DATETIME2)
+     , SYSUTCDATETIME()     -- in UTC
+     , CAST(GETDATE() AS DATE) AS Today;   -- drop the time part
+</pre>
+
+<h2>Extract parts</h2>
+<pre class="sql">
+SELECT OrderID, OrderDate,
+       YEAR(OrderDate)                    AS Yr,        -- 2025
+       MONTH(OrderDate)                   AS Mth,       -- 1..12
+       DAY(OrderDate)                     AS Dy,
+       DATEPART(QUARTER, OrderDate)       AS Qtr,       -- 1..4
+       DATEPART(WEEK, OrderDate)          AS WkNo,
+       DATEPART(WEEKDAY, OrderDate)       AS DayNo,     -- depends on SET DATEFIRST (US default: 1 = Sunday)
+       DATENAME(MONTH, OrderDate)         AS MonthName, -- 'January'
+       DATENAME(WEEKDAY, OrderDate)       AS DayName    -- 'Wednesday'
+FROM Orders WHERE OrderID IN (1001, 1005);
+</pre>
+<div class="tbl" data-title="Result">
+OrderID | OrderDate | Yr | Mth | Dy | Qtr | WkNo | DayNo | MonthName | DayName
+1001 | 2025-01-01 | 2025 | 1 | 1 | 1 | 1 | 4 | January | Wednesday
+1005 | 2025-02-01 | 2025 | 2 | 1 | 1 | 5 | 7 | February | Saturday
+</div>
+<p><code>DATEPART</code> returns a number, <code>DATENAME</code> returns text. The part names (<code>YEAR, QUARTER, MONTH, DAYOFYEAR, DAY, WEEK, WEEKDAY, HOUR...</code>) are keywords, not strings: no quotes.</p>
+
+<h2>Group by a period</h2>
+<pre class="sql">
+SELECT YEAR(OrderDate) AS Yr, MONTH(OrderDate) AS Mth, COUNT(*) AS Orders, SUM(Sales) AS Total
+FROM Orders
+GROUP BY YEAR(OrderDate), MONTH(OrderDate)
+ORDER BY Yr, Mth;
+</pre>
+<div class="tbl" data-title="Result">
+Yr | Mth | Orders | Total
+2025 | 1 | 4 | 180
+2025 | 2 | 3 | 105
+2025 | 3 | 3 | 115
+</div>
+
+<h2>First/last day of a period</h2>
+<pre class="sql">
+SELECT EOMONTH('2025-02-10')                                   -- 2025-02-28  (end of month; handles leap years)
+     , EOMONTH('2025-02-10', 1)                                -- 2025-03-31  (offset in months)
+     , DATEFROMPARTS(2025, 2, 1)                               -- 2025-02-01  build a date
+     , DATETRUNC(MONTH, CAST('2025-02-10' AS DATE))            -- 2025-02-01  (SQL Server 2022+)
+     , DATEADD(DAY, 1, EOMONTH('2025-02-10', -1))              -- 2025-02-01  first day of month, works everywhere
+;
+</pre>
+
+<h2>DATEADD: move a date</h2>
+<pre class="sql">
+SELECT DATEADD(DAY,   10, '2025-01-25')   -- 2025-02-04
+     , DATEADD(MONTH,  1, '2025-01-31')   -- 2025-02-28   (clamps to the last valid day)
+     , DATEADD(YEAR,  -1, '2025-03-15')   -- 2024-03-15   (negative = go back)
+     , DATEADD(HOUR,   5, '2025-01-01 09:00');
+-- orders expected to arrive 7 days after shipping
+SELECT OrderID, ShipDate, DATEADD(DAY, 7, ShipDate) AS Expected FROM Orders;
+</pre>
+
+<h2>DATEDIFF: count the gap</h2>
+<pre class="sql">
+SELECT OrderID, OrderDate, ShipDate,
+       DATEDIFF(DAY, OrderDate, ShipDate) AS DaysToShip
+FROM Orders;
+</pre>
+<div class="tbl" data-title="Result (first rows)">
+OrderID | OrderDate | ShipDate | DaysToShip
+1001 | 2025-01-01 | 2025-01-05 | 4
+1002 | 2025-01-05 | 2025-01-10 | 5
+1003 | 2025-01-10 | 2025-01-25 | 15
+1007 | 2025-02-15 | NULL | NULL
+</div>
+<p>Syntax: <code>DATEDIFF(part, start, end)</code>, answer = <code>end - start</code> in whole <b>parts</b>. NULL ship date gives NULL.</p>
+<div class="callout warn"><b>DATEDIFF counts boundaries crossed, not elapsed time</b>
+<code>DATEDIFF(YEAR, '2024-12-31', '2025-01-01')</code> = <b>1</b> although only one day passed, because the year boundary was crossed once. For an exact age use extra logic (compare month/day) or <code>DATEDIFF(DAY...)/365.25</code>. Watch this:</div>
+<div class="viz" data-id="diff"></div>
+
+<h2>Formatting and converting to text</h2>
+<pre class="sql">
+SELECT FORMAT(OrderDate, 'dd-MMM-yyyy')   -- 01-Jan-2025   (.NET format strings, flexible but slow on big tables)
+     , FORMAT(OrderDate, 'yyyy-MM')       -- 2025-01
+     , CONVERT(VARCHAR(10), OrderDate, 23)  -- 2025-01-01   (style 23 = ISO yyyy-mm-dd)
+     , CONVERT(VARCHAR(10), OrderDate, 103) -- 01/01/2025   (British dd/mm/yyyy, the India style)
+     , CONVERT(VARCHAR(10), OrderDate, 101) -- 01/01/2025   (US mm/dd/yyyy)
+FROM Orders WHERE OrderID = 1001;
+</pre>
+<div class="callout tip"><b>Ambiguity</b>Is <code>'03/04/2025'</code> 3 April or 4 March? It depends on language settings. Always write dates as <code>'YYYY-MM-DD'</code> in code (use <code>'YYYYMMDD'</code> to be safe with DATETIME) and keep dates as DATE columns, not strings.</div>
+<pre class="sql">
+SELECT TRY_CAST('2025-02-30' AS DATE);   -- NULL: February 30 is not real, no crash
+SELECT ISDATE('2025-02-28');             -- 1
+</pre>
+
+<h2>Filtering by period (correct and fast)</h2>
+<pre class="sql">
+-- All of February 2025. Half-open interval: &gt;= start AND &lt; next start
+SELECT * FROM Orders
+WHERE OrderDate &gt;= '2025-02-01' AND OrderDate &lt; '2025-03-01';
+
+-- Slow and index-blind (function on the column):
+-- WHERE YEAR(OrderDate) = 2025 AND MONTH(OrderDate) = 2
+
+-- Last 30 days up to now
+WHERE OrderDate &gt;= DATEADD(DAY, -30, CAST(GETDATE() AS DATE))
+</pre>
+<div class="callout key"><b>Half-open intervals</b>"On or after the first day, strictly before the next period." They work for DATE, DATETIME and DATETIME2 with no midnight/23:59:59.997 tricks, and they let the optimizer use an index.</div>
+
+<h2>Time zones (India relevance)</h2>
+<pre class="sql">
+SELECT SYSDATETIMEOFFSET();                                              -- local with offset, e.g. +05:30
+SELECT SYSUTCDATETIME() AT TIME ZONE 'UTC' AT TIME ZONE 'India Standard Time';   -- UTC converted to IST
+</pre>
+
+<div class="ex"><b>Try it</b>
+<p>1) Find orders that took more than 5 days to ship. 2) List orders still not shipped and how many days they have waited (<code>DATEDIFF(DAY, OrderDate, GETDATE())</code>). 3) Show the day-of-week name with the most orders. 4) Compute each customer's age in whole years correctly (hint: <code>DATEDIFF(YEAR, birth, GETDATE())</code> minus 1 when the birthday has not yet passed this year) using the Employees table.</p></div>
+</main>
+<script src="../assets/course.js"></script>
+<script>
+const rows = [["2024-12-31","2025-01-01"],["2025-01-01","2025-01-31"],["2025-01-01","2025-12-31"],["2025-03-31","2025-04-01"]];
+const T = { id: "d", title: "Date pairs", cols: ["start","end"], rows };
+VIZ.diff = {
+  title: "Elapsed time vs boundaries crossed",
+  tables: [T], result: { title: "Result", cols: ["start","end","YEAR diff","MONTH diff","DAY diff"] },
+  steps: [
+    { note: "Four pairs of dates. Predict each answer first." },
+    { note: "<b>31 Dec 2024 &rarr; 1 Jan 2025</b>: one day apart, yet <code>DATEDIFF(YEAR,...)</code> = <b>1</b> and <code>DATEDIFF(MONTH,...)</code> = <b>1</b>: a year and a month boundary were crossed.",
+      mark: { d: { 0: "y" } }, add: [["2024-12-31","2025-01-01",1,1,1]] },
+    { note: "<b>1 Jan &rarr; 31 Jan 2025</b>: 30 days, same month, so MONTH diff = <b>0</b>, YEAR diff = 0.", mark: { d: { 1: "y" } }, add: [["2025-01-01","2025-01-31",0,0,30]] },
+    { note: "<b>1 Jan &rarr; 31 Dec 2025</b>: almost a full year yet YEAR diff = <b>0</b>; MONTH diff = 11.", mark: { d: { 2: "y" } }, add: [["2025-01-01","2025-12-31",0,11,364]] },
+    { note: "<b>31 Mar &rarr; 1 Apr 2025</b>: 1 day, MONTH diff = <b>1</b>. Lesson: DATEDIFF with big parts counts <em>calendar boundaries</em>. For exact elapsed time use DAY (or smaller) and divide.", mark: { d: { 3: "y" } }, add: [["2025-03-31","2025-04-01",0,1,1]] }
+  ]
+};
+</script>
+</body></html>

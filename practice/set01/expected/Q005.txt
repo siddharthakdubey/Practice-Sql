@@ -1,0 +1,6 @@
+﻿Status|OrderCount
+------|----------
+Delivered|59
+Shipped|10
+Processing|8
+Cancelled|3

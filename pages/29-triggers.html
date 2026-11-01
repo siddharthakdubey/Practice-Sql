@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Triggers</title><link rel="stylesheet" href="../assets/style.css"></head>
+<body data-page="29-triggers"><main>
+<h1>Triggers</h1>
+<p class="lead">SQL that runs <em>automatically</em> when rows are inserted, updated or deleted: audit trails, rules and derived data.</p>
+<div class="goals"><b>After this topic you will</b> write AFTER and INSTEAD OF triggers, use the <code>inserted</code> and <code>deleted</code> pseudo-tables, build a safe multi-row audit trigger, and know when <em>not</em> to use a trigger.</div>
+
+<h2>What is a trigger?</h2>
+<p>A special kind of stored procedure attached to a <b>table</b> (or a view, or the database) that SQL Server <b>fires</b> by itself on an event. Nobody calls it.</p>
+<table class="cmp">
+<tr><th>Type</th><th>Fires on</th><th>Typical use</th></tr>
+<tr><td><b>DML trigger: AFTER</b> (FOR)</td><td>after INSERT / UPDATE / DELETE succeeded on the table</td><td>audit log, update summary table, cross-table validation</td></tr>
+<tr><td><b>DML trigger: INSTEAD OF</b></td><td>replaces the INSERT/UPDATE/DELETE with your code</td><td>make a complex view updatable, soft delete</td></tr>
+<tr><td><b>DDL trigger</b></td><td>CREATE / ALTER / DROP</td><td>block <code>DROP TABLE</code> in production, log schema changes</td></tr>
+<tr><td><b>Logon trigger</b></td><td>a login attempt</td><td>limit sessions (rare)</td></tr>
+</table>
+
+<h2>The magic tables: inserted and deleted</h2>
+<p>Inside a DML trigger two virtual tables with the same columns as the base table exist:</p>
+<table class="cmp">
+<tr><th>Statement</th><th><code>inserted</code> holds</th><th><code>deleted</code> holds</th></tr>
+<tr><td>INSERT</td><td>the new rows</td><td>empty</td></tr>
+<tr><td>DELETE</td><td>empty</td><td>the removed rows</td></tr>
+<tr><td>UPDATE</td><td>the rows <b>after</b> the change</td><td>the rows <b>before</b> the change</td></tr>
+</table>
+<div class="callout key"><b>One statement, many rows, one trigger run</b>A single <code>UPDATE ... WHERE Department='Sales'</code> that changes 3 rows fires the trigger <b>once</b>, and <code>inserted</code> has 3 rows. Triggers must be written <b>set-based</b>. Writing <code>SELECT @x = Salary FROM inserted</code> assumes one row and silently handles only one of them: the most common trigger bug.</div>
+
+<h2>Example: an audit trail for salary changes</h2>
+<pre class="sql">
+CREATE TABLE dbo.SalaryAudit (
+    AuditID    INT IDENTITY(1,1) PRIMARY KEY,
+    EmployeeID INT,
+    OldSalary  DECIMAL(10,2),
+    NewSalary  DECIMAL(10,2),
+    ChangedBy  SYSNAME      DEFAULT SUSER_SNAME(),    -- who did it
+    ChangedAt  DATETIME2    DEFAULT SYSUTCDATETIME()  -- when (UTC)
+);
+GO
+CREATE OR ALTER TRIGGER dbo.trg_Employees_SalaryAudit
+ON dbo.Employees
+AFTER UPDATE
+AS
+BEGIN
+    SET NOCOUNT ON;
+    IF NOT UPDATE(Salary) RETURN;                       -- ignore updates that did not touch Salary
+
+    INSERT INTO dbo.SalaryAudit (EmployeeID, OldSalary, NewSalary)
+    SELECT d.EmployeeID, d.Salary, i.Salary
+    FROM   deleted  d
+    JOIN   inserted i ON i.EmployeeID = d.EmployeeID    -- match old and new version of the same row
+    WHERE  ISNULL(d.Salary, -1) &lt;&gt; ISNULL(i.Salary, -1);  -- only real changes (NULL-safe)
+END;
+GO
+UPDATE Employees SET Salary = Salary * 1.10 WHERE Department = 'Sales';
+SELECT * FROM dbo.SalaryAudit;
+</pre>
+<div class="viz" data-id="trg"></div>
+<div class="tbl" data-title="SalaryAudit after the UPDATE">
+AuditID | EmployeeID | OldSalary | NewSalary
+1 | 3 | 75000.00 | 82500.00
+2 | 4 | 90000.00 | 99000.00
+3 | 5 | 55000.00 | 60500.00
+</div>
+<p>(ChangedBy / ChangedAt omitted.) The trigger runs <b>inside the same transaction</b> as the UPDATE: if the trigger fails, or you ROLLBACK, the data change is undone as well, so the audit never disagrees with the data.</p>
+
+<h2>Example: a rule a CHECK cannot express (reject)</h2>
+<pre class="sql">
+CREATE OR ALTER TRIGGER dbo.trg_Orders_NoShipBeforeOrder
+ON dbo.Orders
+AFTER INSERT, UPDATE
+AS
+BEGIN
+    SET NOCOUNT ON;
+    IF EXISTS (SELECT 1 FROM inserted WHERE ShipDate &lt; OrderDate)
+    BEGIN
+        THROW 50010, 'ShipDate cannot be earlier than OrderDate.', 1;   -- aborts the statement (rolls it back)
+    END
+END;
+</pre>
+<p>(For a rule within one table, a <code>CHECK (ShipDate &gt;= OrderDate)</code> constraint is simpler and faster: prefer constraints; use triggers when other tables are involved.)</p>
+
+<h2>INSTEAD OF: replace the action</h2>
+<pre class="sql">
+-- Soft delete: DELETE becomes "mark as inactive"
+ALTER TABLE Customers ADD IsActive BIT NOT NULL DEFAULT 1;
+GO
+CREATE OR ALTER TRIGGER dbo.trg_Customers_SoftDelete
+ON dbo.Customers
+INSTEAD OF DELETE
+AS
+BEGIN
+    SET NOCOUNT ON;
+    UPDATE c SET IsActive = 0
+    FROM dbo.Customers c JOIN deleted d ON d.CustomerID = c.CustomerID;   -- the real DELETE never happens
+END;
+GO
+DELETE FROM Customers WHERE CustomerID = 5;      -- Anna is still there, with IsActive = 0
+</pre>
+<p>INSTEAD OF triggers on a <b>view</b> let you INSERT/UPDATE a multi-table view by hand-coding where each column goes (topic 25).</p>
+
+<h2>Enable, disable, drop, list</h2>
+<pre class="sql">
+DISABLE TRIGGER dbo.trg_Employees_SalaryAudit ON dbo.Employees;     -- e.g. during a bulk load
+ENABLE  TRIGGER dbo.trg_Employees_SalaryAudit ON dbo.Employees;
+DROP TRIGGER IF EXISTS dbo.trg_Employees_SalaryAudit;
+SELECT name, parent_class_desc, is_disabled FROM sys.triggers;       -- which triggers exist
+</pre>
+
+<h2>A DDL trigger (guard rail)</h2>
+<pre class="sql">
+CREATE TRIGGER trg_NoDropTable ON DATABASE FOR DROP_TABLE AS
+BEGIN
+    RAISERROR ('DROP TABLE is blocked. Disable this trigger first.', 16, 1);
+    ROLLBACK;
+END;
+</pre>
+
+<h2>Downsides: use with care</h2>
+<ul>
+<li><b>Hidden behaviour</b>: the code runs invisibly. A developer sees an UPDATE take twice as long and does not know why. Document triggers.</li>
+<li><b>Performance</b>: they run on every matching statement, inside the transaction, holding locks longer. Bulk loads slow down.</li>
+<li><b>Cascades</b>: a trigger that updates another table with its own trigger... chains and loops (recursive triggers are off by default).</li>
+<li><b>Harder to test and debug</b> than a procedure or application code.</li>
+<li><b>Not fired</b> by TRUNCATE, bulk inserts without <code>FIRE_TRIGGERS</code>, or if disabled.</li>
+</ul>
+<table class="cmp">
+<tr><th>If you need...</th><th>Prefer</th></tr>
+<tr><td>Simple value rules, uniqueness, relationships</td><td>constraints (CHECK, UNIQUE, FOREIGN KEY)</td></tr>
+<tr><td>Default values / created-at</td><td>DEFAULT constraint</td></tr>
+<tr><td>Business steps, called on purpose</td><td>stored procedure</td></tr>
+<tr><td>Audit trail whoever changes the data, or rules involving several tables</td><td><b>trigger</b> (or SQL Server's built-in Change Tracking / CDC / temporal tables for history)</td></tr>
+</table>
+<div class="callout tip"><b>Modern alternative for history</b><i>System-versioned temporal tables</i> (<code>WITH (SYSTEM_VERSIONING = ON)</code>) keep every old row version automatically, without writing a trigger.</div>
+
+<div class="ex"><b>Try it</b>
+<p>1) Create a trigger on <code>Orders</code> that inserts into <code>OrderLog(OrderID, Action, At)</code> for INSERT, UPDATE and DELETE (hint: check whether <code>inserted</code>/<code>deleted</code> have rows to decide the action). 2) Update 3 rows in one statement and verify 3 log rows (not 1). 3) Disable the trigger and repeat. 4) Why would <code>SELECT @id = OrderID FROM inserted</code> be a bug?</p></div>
+</main>
+<script src="../assets/course.js"></script>
+<script>
+const e = pick(D.employees, ["EmployeeID","FirstName","Department","Salary"]);
+VIZ.trg = {
+  title: "UPDATE ... WHERE Department = 'Sales' fires the trigger once",
+  query: "UPDATE Employees SET Salary = Salary * 1.10\nWHERE Department = 'Sales';",
+  tables: [e], result: { title: "dbo.SalaryAudit", cols: ["EmployeeID","OldSalary","NewSalary"] },
+  steps: [
+    { note: "<b>1. The statement starts.</b> Three Sales rows match WHERE (green). Marketing rows are untouched." , mark: { employees: {0:"r",1:"r",2:"g",3:"g",4:"g"} } },
+    { note: "<b>2. The rows change</b> (inside a transaction): 75000 &rarr; 82500, 90000 &rarr; 99000, 55000 &rarr; 60500.", mark: { employees: {2:"y",3:"y",4:"y"} } },
+    { note: "<b>3. The AFTER UPDATE trigger fires ONCE</b> for the whole statement. <code>deleted</code> contains the 3 old rows, <code>inserted</code> the 3 new rows.", mark: { employees: {2:"b",3:"b",4:"b"} } },
+    { note: "<b>4. The trigger joins</b> <code>deleted</code> and <code>inserted</code> on EmployeeID so each old salary meets its new salary, and inserts 3 audit rows.", mark: { employees: {2:"g",3:"g",4:"g"} },
+      add: [[3,75000,82500],[4,90000,99000],[5,55000,60500]] },
+    { note: "<b>5. COMMIT.</b> The salary change and the audit rows are saved together, or (on any error) rolled back together." }
+  ]
+};
+</script>
+</body></html>

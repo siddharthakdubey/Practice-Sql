@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SQL joins (basics)</title><link rel="stylesheet" href="../assets/style.css"></head>
+<body data-page="08-joins-basic"><main>
+<h1>SQL joins (basics)</h1>
+<p class="lead">Combine columns from two tables by matching rows. INNER, LEFT, RIGHT and FULL, animated row by row.</p>
+<div class="goals"><b>After this topic you will</b> explain what a join does, choose between INNER/LEFT/RIGHT/FULL, predict the row count, and write multi-table joins with aliases.</div>
+
+<h2>Why join?</h2>
+<p>Good design stores each fact once: customer names in <code>Customers</code>, orders in <code>Orders</code>. The order only keeps the <b>CustomerID</b> (a foreign key). To see "who bought what" you <b>join</b> the tables back together on that key.</p>
+<div class="tbl" data-src="customers" data-cols="CustomerID,FirstName,Country"></div>
+<div class="tbl" data-src="orders" data-cols="OrderID,CustomerID,ProductID,Sales"></div>
+<p>Notice the planted problems: <b>Anna (5)</b> has no orders, and order <b>1004</b> points to customer 6 who does not exist. They show the difference between join types.</p>
+
+<h2>Without a join: the CROSS product (a warning)</h2>
+<pre class="sql">SELECT * FROM Customers, Orders;    -- 5 x 10 = 50 rows: every combination. Almost never what you want.</pre>
+<p>A join is "that product, filtered to the rows where the keys match". The engine does not really build 50 rows, but logically it is the same.</p>
+
+<h2>Anatomy of a join</h2>
+<pre class="sql">
+SELECT c.FirstName, o.OrderID, o.Sales
+FROM   Customers AS c            -- LEFT table
+INNER JOIN Orders AS o           -- RIGHT table
+       ON o.CustomerID = c.CustomerID;   -- the join condition
+</pre>
+<ul>
+<li><b>Left table</b> = the one written before JOIN. <b>Right table</b> = after.</li>
+<li><code>ON</code> says which rows belong together.</li>
+<li>Give tables short <b>aliases</b> (<code>c</code>, <code>o</code>) and prefix columns with them. Required when a column name exists in both tables (<code>CustomerID</code>), and kind to the reader always.</li>
+</ul>
+
+<h2>INNER JOIN: only the matches</h2>
+<p>Keeps rows only when a match exists on <em>both</em> sides. <code>JOIN</code> alone means INNER JOIN.</p>
+<div class="viz" data-id="inner"></div>
+<div class="callout key"><b>Two surprises you just saw</b>Customers with several orders <em>repeat</em> (Kevin appears 3 times) so a join can have more rows than either table. And rows without a partner (Anna, order 1004) silently vanish.</div>
+
+<h2>LEFT JOIN: keep every left row</h2>
+<p>All rows of the left table, plus matching right rows. No match gives NULLs on the right side.</p>
+<div class="viz" data-id="left"></div>
+<p>The classic use: "all customers, including those who never ordered". And the classic follow-up, "<em>only</em> those who never ordered", is a LEFT JOIN with <code>WHERE o.OrderID IS NULL</code> (an anti join, topic 9).</p>
+
+<h2>RIGHT JOIN: keep every right row</h2>
+<p>Mirror image of LEFT. Most people simply swap the table order and use LEFT JOIN, because reading "main table first" is easier.</p>
+<pre class="sql">
+SELECT c.FirstName, o.OrderID, o.Sales
+FROM   Customers c
+RIGHT JOIN Orders o ON o.CustomerID = c.CustomerID;
+-- identical to:  FROM Orders o LEFT JOIN Customers c ON ...  (columns in another order)
+</pre>
+<div class="tbl" data-title="Result: all 10 orders; 1004 has no customer name">
+FirstName | OrderID | Sales
+Kevin | 1001 | 20
+Mary | 1002 | 60
+Jossef | 1003 | 10
+NULL | 1004 | 90
+Mark | 1005 | 40
+Kevin | 1006 | 25
+Mary | 1007 | 40
+Jossef | 1008 | 50
+Kevin | 1009 | 20
+Mark | 1010 | 45
+</div>
+
+<h2>FULL JOIN: keep everything from both sides</h2>
+<p>Matches combined, plus unmatched rows from <em>both</em> tables with NULLs on the missing side.</p>
+<div class="viz" data-id="full"></div>
+
+<h2>Which one do I pick?</h2>
+<table class="cmp">
+<tr><th>Question you are answering</th><th>Join</th><th>Rows from left without match</th><th>Rows from right without match</th></tr>
+<tr><td>"Orders with their customer" (ignore unmatched)</td><td>INNER</td><td>dropped</td><td>dropped</td></tr>
+<tr><td>"All customers, with orders if any"</td><td>LEFT (Customers first)</td><td><b>kept</b></td><td>dropped</td></tr>
+<tr><td>"All orders, with customer if known"</td><td>LEFT (Orders first) or RIGHT</td><td>dropped</td><td><b>kept</b></td></tr>
+<tr><td>"Everything, show what does not match on either side" (data reconciliation)</td><td>FULL</td><td><b>kept</b></td><td><b>kept</b></td></tr>
+</table>
+
+<h2>Joining more than two tables</h2>
+<p>Chain joins; each one joins the result so far to a new table.</p>
+<pre class="sql">
+SELECT c.FirstName, p.Product, o.Quantity, o.Sales, e.FirstName AS SoldBy
+FROM       Orders    AS o
+LEFT JOIN  Customers AS c ON c.CustomerID   = o.CustomerID
+LEFT JOIN  Products  AS p ON p.ProductID    = o.ProductID
+LEFT JOIN  Employees AS e ON e.EmployeeID   = o.SalesPersonID;
+</pre>
+<div class="callout tip"><b>Habit</b>Start from the "main" table (the one whose rows you want to count), then LEFT JOIN the lookup tables onto it. An INNER JOIN in the middle of a chain of LEFT JOINs silently deletes the unmatched rows again.</div>
+
+<h2>Common mistakes</h2>
+<ul>
+<li><b>Forgetting the ON</b> (or using the wrong columns): you get a huge cross product.</li>
+<li><b>Filtering the right table in WHERE after a LEFT JOIN</b>: <code>WHERE o.OrderStatus='Delivered'</code> turns the LEFT JOIN into an INNER JOIN, because NULL rows fail the test. Put the condition in <code>ON</code> instead (see topic 9).</li>
+<li><b>Joining on non-unique columns</b> multiplies rows (a "fan-out") and inflates SUMs. Check the row count before and after.</li>
+<li><b>Joining on text with different case/spaces/types</b> (<code>'USA'</code> vs <code>'usa '</code>): clean first.</li>
+<li>NULL never equals NULL, so rows with NULL keys do not match each other.</li>
+</ul>
+
+<div class="ex"><b>Try it</b>
+<p>1) List each product with total quantity sold, including products never sold (Socks). 2) Show customers with no orders. 3) Change the INNER JOIN above to LEFT, then RIGHT, then FULL, and count rows each time (9, 10, 10, 11). 4) Predict first: how many rows does <code>Orders JOIN Products</code> return? (10, because every order has a valid product.)</p></div>
+</main>
+<script src="../assets/course.js"></script>
+<script>
+const L = pick(D.customers, ["CustomerID","FirstName"], "Customers (c)");
+const R = pick(D.orders, ["OrderID","CustomerID","Sales"], "Orders (o)");
+R.id = "orders"; L.id = "customers";
+const out = (l, r) => [l ? l[1] : null, r ? r[0] : null, r ? r[2] : null];
+const cols = ["FirstName","OrderID","Sales"];
+const q = t => "SELECT c.FirstName, o.OrderID, o.Sales\nFROM Customers c\n" + t + " JOIN Orders o\n  ON o.CustomerID = c.CustomerID;";
+VIZ.inner = joinSpec({ title: "INNER JOIN, row by row", query: q("INNER"), L, R, lk: 0, rk: 1, type: "inner", cols, out });
+VIZ.left  = joinSpec({ title: "LEFT JOIN, row by row",  query: q("LEFT"),  L, R, lk: 0, rk: 1, type: "left",  cols, out });
+VIZ.full  = joinSpec({ title: "FULL JOIN, row by row",  query: q("FULL"),  L, R, lk: 0, rk: 1, type: "full",  cols, out });
+</script>
+</body></html>

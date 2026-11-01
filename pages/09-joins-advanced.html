@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SQL joins (advanced)</title><link rel="stylesheet" href="../assets/style.css"></head>
+<body data-page="09-joins-advanced"><main>
+<h1>SQL joins (advanced)</h1>
+<p class="lead">Anti joins, CROSS and self joins, ON versus WHERE, and how to choose the right join for the question.</p>
+<div class="goals"><b>After this topic you will</b> find rows with no match (anti joins), generate combinations (CROSS JOIN), join a table to itself (hierarchies), and avoid the "LEFT JOIN turned INNER" bug.</div>
+
+<h2>Anti joins: rows that have NO match</h2>
+<p>SQL has no <code>ANTI JOIN</code> keyword. You build it with a LEFT/RIGHT/FULL join and a NULL test on the other table's key. The unmatched side shows up as NULLs, so <code>IS NULL</code> finds exactly those rows.</p>
+
+<h3>Left anti join: "customers who never ordered"</h3>
+<pre class="sql">
+SELECT c.CustomerID, c.FirstName
+FROM   Customers c
+LEFT JOIN Orders o ON o.CustomerID = c.CustomerID
+WHERE  o.OrderID IS NULL;          -- test a column that can NEVER be NULL in a real match (the key)
+</pre>
+<div class="viz" data-id="leftanti"></div>
+<div class="tbl" data-title="Result">
+CustomerID | FirstName
+5 | Anna
+</div>
+
+<h3>Right anti join: "orders whose customer does not exist"</h3>
+<pre class="sql">
+SELECT o.OrderID, o.CustomerID
+FROM   Customers c
+RIGHT JOIN Orders o ON o.CustomerID = c.CustomerID
+WHERE  c.CustomerID IS NULL;       -- or write it as Orders o LEFT JOIN Customers c ...
+</pre>
+<div class="tbl" data-title="Result">
+OrderID | CustomerID
+1004 | 6
+</div>
+<p>This is a <b>data quality check</b>: orphan rows that a missing foreign key let through.</p>
+
+<h3>Full anti join: "everything that has no partner on either side"</h3>
+<pre class="sql">
+SELECT c.CustomerID AS CustCustomerID, o.OrderID
+FROM   Customers c
+FULL JOIN Orders o ON o.CustomerID = c.CustomerID
+WHERE  c.CustomerID IS NULL OR o.OrderID IS NULL;
+</pre>
+<div class="viz" data-id="fullanti"></div>
+<div class="callout tip"><b>Three ways to write "has no match"</b>1) LEFT JOIN + IS NULL (above). 2) <code>WHERE NOT EXISTS (SELECT 1 FROM Orders o WHERE o.CustomerID = c.CustomerID)</code>. 3) <code>WHERE CustomerID NOT IN (SELECT CustomerID FROM Orders)</code>, which is <b>dangerous if the subquery can return NULL</b>. NOT EXISTS and LEFT JOIN are the safe choices and usually the fastest.</div>
+
+<h2>CROSS JOIN: every combination</h2>
+<pre class="sql">
+SELECT s.Size, c.Color
+FROM   (VALUES ('S'), ('M')) AS s(Size)
+CROSS JOIN (VALUES ('Red'), ('Blue'), ('Green')) AS c(Color);
+</pre>
+<div class="viz" data-id="cross"></div>
+<p>Rows = rows in A &times; rows in B. Useful for: all product-size-colour variants, a calendar of every date &times; every store (then LEFT JOIN actual sales to see missing days), test data. Dangerous on big tables: 1 million &times; 1 million = 1 trillion rows.</p>
+
+<h2>SELF JOIN: a table joined to itself</h2>
+<p>Employees have a <code>ManagerID</code> that points to another row of the <em>same</em> table. Treat it as two copies under different aliases.</p>
+<pre class="sql">
+SELECT e.FirstName AS Employee, m.FirstName AS Manager
+FROM   Employees e
+LEFT JOIN Employees m ON m.EmployeeID = e.ManagerID;     -- LEFT so the top boss (no manager) stays
+</pre>
+<div class="viz" data-id="self"></div>
+<div class="tbl" data-title="Result">
+Employee | Manager
+Frank | NULL
+Kevin | Frank
+Mary | Frank
+Michael | Kevin
+Carol | Mary
+</div>
+<p>This handles one level. For a whole org chart of unknown depth you need a <b>recursive CTE</b> (topic 24).</p>
+
+<h2>ON vs WHERE in outer joins</h2>
+<p>For an INNER JOIN, a condition in ON or in WHERE gives the same result. For an <b>outer</b> join, it does not:</p>
+<ul>
+<li><b>ON</b> decides <em>which rows match</em>. Unmatched left rows still survive.</li>
+<li><b>WHERE</b> runs <em>after</em> the join and deletes rows, including the NULL-filled ones.</li>
+</ul>
+<pre class="sql">
+-- A: condition in ON  -> keeps all customers
+SELECT c.FirstName, o.OrderID
+FROM Customers c LEFT JOIN Orders o
+     ON o.CustomerID = c.CustomerID AND o.OrderStatus = 'Delivered';
+
+-- B: condition in WHERE -> Mary and Anna vanish
+SELECT c.FirstName, o.OrderID
+FROM Customers c LEFT JOIN Orders o ON o.CustomerID = c.CustomerID
+WHERE o.OrderStatus = 'Delivered';
+</pre>
+<div class="tbl" data-title="A: 8 rows (everyone kept)">
+FirstName | OrderID
+Jossef | 1003
+Jossef | 1008
+Kevin | 1001
+Kevin | 1006
+Mary | NULL
+Mark | 1005
+Mark | 1010
+Anna | NULL
+</div>
+<div class="tbl" data-title="B: 6 rows (acts like INNER)">
+FirstName | OrderID
+Jossef | 1003
+Jossef | 1008
+Kevin | 1001
+Kevin | 1006
+Mark | 1005
+Mark | 1010
+</div>
+<div class="callout key"><b>Rule of thumb</b>With LEFT JOIN: conditions on the <em>left</em> table go in WHERE; conditions on the <em>right</em> table go in ON. Exception: the deliberate IS NULL anti-join test goes in WHERE.</div>
+
+<h2>Non-equi joins and more tricks</h2>
+<ul>
+<li><b>Range join</b>: <code>JOIN SalaryBands b ON e.Salary BETWEEN b.Low AND b.High</code>: the ON is not an equality, any condition works.</li>
+<li><b>Multi-column key</b>: <code>ON a.Year = b.Year AND a.Region = b.Region</code>.</li>
+<li><b>Alternative to FULL JOIN</b> (not in MySQL): <code>LEFT JOIN</code> <code>UNION</code> <code>RIGHT JOIN</code>.</li>
+<li><b>Join and aggregate</b>: aggregate <em>before</em> joining when the other side has many rows, to avoid fan-out (topic 17, 24).</li>
+</ul>
+
+<h2>Choosing a join: decision flow</h2>
+<table class="cmp">
+<tr><th>Ask yourself</th><th>Use</th></tr>
+<tr><td>Do I only want rows that exist on both sides?</td><td>INNER JOIN</td></tr>
+<tr><td>Must every row of table A appear, match or not?</td><td>A LEFT JOIN B</td></tr>
+<tr><td>Do I need everything from both, to compare?</td><td>FULL JOIN</td></tr>
+<tr><td>Do I want A rows with no partner in B?</td><td>LEFT JOIN ... WHERE B.key IS NULL, or NOT EXISTS</td></tr>
+<tr><td>Do I want every combination?</td><td>CROSS JOIN</td></tr>
+<tr><td>Does the table reference itself?</td><td>Self join (or recursive CTE for unknown depth)</td></tr>
+</table>
+
+<div class="ex"><b>Try it</b>
+<p>1) Products that were never ordered (Socks). 2) Employees who never made a sale (Frank, Kevin). 3) Employee, manager and manager's manager in one row (join Employees three times). 4) Build a list of every (Customer, Product) pair with a CROSS JOIN, then LEFT JOIN Orders to flag pairs that actually happened.</p></div>
+</main>
+<script src="../assets/course.js"></script>
+<script>
+const L = pick(D.customers, ["CustomerID","FirstName"], "Customers (c)");
+const R = pick(D.orders, ["OrderID","CustomerID","Sales"], "Orders (o)");
+const out = (l, r) => l ? [l[0], l[1]] : [r[1], null];
+VIZ.leftanti = joinSpec({ title: "LEFT ANTI JOIN: keep the customers with no order",
+  query: "FROM Customers c LEFT JOIN Orders o\n  ON o.CustomerID = c.CustomerID\nWHERE o.OrderID IS NULL", L, R, lk: 0, rk: 1, type: "leftanti", cols: ["CustomerID","FirstName"], out });
+VIZ.fullanti = joinSpec({ title: "FULL ANTI JOIN: keep rows with no partner on either side",
+  query: "FROM Customers c FULL JOIN Orders o\n  ON o.CustomerID = c.CustomerID\nWHERE c.CustomerID IS NULL OR o.OrderID IS NULL", L, R, lk: 0, rk: 1, type: "fullanti", cols: ["CustomerID","FirstName (NULL = unknown)"], out });
+
+const S = { id: "sizes", title: "Sizes", cols: ["#","Size"], rows: [[1,"S"],[2,"M"]] };
+const C = { id: "colors", title: "Colors", cols: ["#","Color"], rows: [[1,"Red"],[2,"Blue"],[3,"Green"]] };
+VIZ.cross = joinSpec({ title: "CROSS JOIN: 2 x 3 = 6 rows", query: "FROM Sizes CROSS JOIN Colors", L: S, R: C, lk: 0, rk: 0, type: "cross",
+  cols: ["Size","Color"], out: (l, r) => [l[1], r[1]], lname: "Sizes", rname: "Colors" });
+
+const E = pick(D.employees, ["EmployeeID","FirstName","ManagerID"], "Employees (e): the employee");
+const M = pick(D.employees, ["EmployeeID","FirstName"], "Employees (m): the manager"); M.id = "mgr";
+VIZ.self = joinSpec({ title: "SELF JOIN: the same table twice", query: "FROM Employees e\nLEFT JOIN Employees m ON m.EmployeeID = e.ManagerID",
+  L: E, R: M, lk: 2, rk: 0, type: "left", cols: ["Employee","Manager"], out: (l, r) => [l ? l[1] : null, r ? r[1] : null], lname: "e", rname: "m" });
+</script>
+</body></html>

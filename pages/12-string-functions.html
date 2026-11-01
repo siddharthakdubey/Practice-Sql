@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>String functions</title><link rel="stylesheet" href="../assets/style.css"></head>
+<body data-page="12-string-functions"><main>
+<h1>String functions</h1>
+<p class="lead">Clean, cut, join and search text. Most real-world SQL starts with messy strings.</p>
+<div class="goals"><b>After this topic you will</b> manipulate text with CONCAT, UPPER/LOWER, TRIM, REPLACE, LEN, LEFT/RIGHT/SUBSTRING, CHARINDEX, STRING_AGG and STRING_SPLIT, and combine them to parse values.</div>
+<div class="tbl" data-src="customers"></div>
+
+<h2>Join text: CONCAT and +</h2>
+<pre class="sql">
+SELECT FirstName, LastName,
+       FirstName + ' ' + LastName        AS WithPlus,
+       CONCAT(FirstName, ' ', LastName)  AS WithConcat,
+       CONCAT_WS(' ', FirstName, LastName) AS WithSeparator
+FROM Customers;
+</pre>
+<div class="tbl" data-title="Result">
+FirstName | LastName | WithPlus | WithConcat | WithSeparator
+Jossef | Goldberg | Jossef Goldberg | Jossef Goldberg | Jossef Goldberg
+Kevin | Brown | Kevin Brown | Kevin Brown | Kevin Brown
+Mary | NULL | NULL | Mary&nbsp; | Mary
+Mark | Schwarz | Mark Schwarz | Mark Schwarz | Mark Schwarz
+Anna | Adams | Anna Adams | Anna Adams | Anna Adams
+</div>
+<div class="callout key"><b>NULL poisons +</b><code>'Mary' + NULL</code> is NULL, but <code>CONCAT</code> treats NULL as an empty string (leaving a trailing space for Mary). <code>CONCAT_WS</code> (with separator) skips NULLs entirely, so it is the cleanest for names and addresses.</div>
+
+<h2>Case and whitespace</h2>
+<pre class="sql">
+SELECT UPPER('Kevin')            -- KEVIN
+     , LOWER('Kevin')            -- kevin
+     , TRIM('   Kevin  ')        -- 'Kevin'   (both ends; LTRIM / RTRIM for one side)
+     , REPLACE('a-b-c', '-', '') -- 'abc'     (remove or swap text)
+     , REPLACE(Country, 'USA', 'United States')
+FROM Customers;
+</pre>
+<p>Typical use: compare cleanly. <code>WHERE LOWER(TRIM(Email)) = 'a@b.com'</code> (note the index warning from topic 11).</p>
+
+<h2>Length</h2>
+<pre class="sql">
+SELECT LEN('Kevin')            -- 5   (ignores trailing spaces: LEN('Kevin  ') is also 5)
+     , DATALENGTH('Kevin')     -- 5 bytes (NVARCHAR doubles it)
+     , LEN(LastName)           -- NULL for Mary: function of NULL is NULL
+FROM Customers;
+</pre>
+<p>Use length to find bad data: <code>WHERE LEN(Phone) &lt;&gt; 10</code>.</p>
+
+<h2>Cut: LEFT, RIGHT, SUBSTRING</h2>
+<pre class="sql">
+SELECT LEFT('Goldberg', 4)         -- 'Gold'     first 4 characters
+     , RIGHT('Goldberg', 4)        -- 'berg'     last 4
+     , SUBSTRING('Goldberg', 5, 3) -- 'ber'      start at position 5 (positions start at 1!), take 3
+     , SUBSTRING('Goldberg', 5, LEN('Goldberg'))  -- 'berg'  "to the end" idiom
+;
+</pre>
+<div class="tbl" data-title="Positions">
+Position | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8
+Letter | G | o | l | d | b | e | r | g
+</div>
+
+<h2>Find: CHARINDEX</h2>
+<pre class="sql">
+SELECT CHARINDEX('@', 'jo@bank.in');         -- 3   (position of the first match, 0 if not found)
+SELECT CHARINDEX('x', 'jo@bank.in');         -- 0
+SELECT CHARINDEX('.', 'a.b.c', 3);           -- 4   (start searching at position 3)
+</pre>
+<p>Combine FIND with CUT to parse text. Extract the domain of an e-mail:</p>
+<pre class="sql">
+DECLARE @email VARCHAR(50) = 'jo@bank.in';
+
+SELECT SUBSTRING(@email, CHARINDEX('@', @email) + 1, LEN(@email)) AS Domain;   -- 'bank.in'
+SELECT LEFT(@email, CHARINDEX('@', @email) - 1)                   AS UserName; -- 'jo'
+</pre>
+<div class="viz" data-id="parse"></div>
+
+<h2>Other handy functions</h2>
+<table class="cmp">
+<tr><th>Function</th><th>Example</th><th>Result</th></tr>
+<tr><td>REVERSE</td><td><code>REVERSE('abc')</code></td><td><code>cba</code></td></tr>
+<tr><td>REPLICATE</td><td><code>REPLICATE('*', 4)</code></td><td><code>****</code></td></tr>
+<tr><td>STUFF</td><td><code>STUFF('Kevin', 2, 3, '---')</code></td><td><code>K---n</code> (overwrite 3 chars from position 2)</td></tr>
+<tr><td>Mask a value</td><td><code>REPLICATE('X', LEN(p)-4) + RIGHT(p, 4)</code></td><td>XXXXXX1234</td></tr>
+<tr><td>Pad left with zeros</td><td><code>RIGHT('00000' + CAST(42 AS VARCHAR), 5)</code></td><td><code>00042</code></td></tr>
+<tr><td>FORMAT</td><td><code>FORMAT(1234.5, 'N2')</code></td><td><code>1,234.50</code> (slow on big sets)</td></tr>
+<tr><td>CHARINDEX count</td><td><code>LEN(s) - LEN(REPLACE(s, ',', ''))</code></td><td>number of commas in s</td></tr>
+</table>
+
+<h2>Rows to one string, and one string to rows</h2>
+<pre class="sql">
+-- STRING_AGG: many rows -&gt; one string (it is an aggregate, topic 17)
+SELECT Country, STRING_AGG(FirstName, ', ') WITHIN GROUP (ORDER BY FirstName) AS People
+FROM Customers
+GROUP BY Country;
+</pre>
+<div class="tbl" data-title="Result">
+Country | People
+Germany | Jossef, Mark
+USA | Anna, Kevin, Mary
+</div>
+<pre class="sql">
+-- STRING_SPLIT: one string -&gt; many rows (SQL Server 2016+)
+SELECT value FROM STRING_SPLIT('red,green,blue', ',');
+</pre>
+<div class="tbl" data-title="Result">
+value
+red
+green
+blue
+</div>
+
+<h2>A worked clean-up</h2>
+<pre class="sql">
+-- Standardise names: trim, Proper case for first letter, treat NULL
+SELECT CustomerID,
+       UPPER(LEFT(TRIM(FirstName), 1)) + LOWER(SUBSTRING(TRIM(FirstName), 2, LEN(FirstName))) AS CleanFirst,
+       ISNULL(LastName, 'n/a') AS Last
+FROM Customers;
+</pre>
+
+<h2>Pitfalls</h2>
+<ul>
+<li>Positions start at <b>1</b>, not 0.</li>
+<li><code>LEN</code> ignores trailing spaces; leading spaces count.</li>
+<li>Comparisons are case-insensitive by default (collation), unlike many languages.</li>
+<li>A string function given NULL returns NULL (except CONCAT, ISNULL).</li>
+<li>Using functions on a filtered column prevents index use.</li>
+</ul>
+
+<div class="ex"><b>Try it</b>
+<p>1) Show initials like <code>K.B.</code> for each customer (handle Mary's NULL). 2) Return the part of <code>'Goldberg'</code> after the 4th letter using SUBSTRING. 3) Count how many words are in <code>'one two three'</code> (hint: spaces + 1). 4) Mask every customer's first name as <code>K****</code>.</p></div>
+</main>
+<script src="../assets/course.js"></script>
+<script>
+const s = "jo@bank.in";
+const T = { id: "s", title: "@email = 'jo@bank.in'", cols: ["Position","Character"], rows: [...s].map((ch, i) => [i + 1, ch]) };
+const mk = (from, to, cls) => { const o = {}; for (let i = from; i <= to; i++) o[i] = cls; return o; };
+VIZ.parse = {
+  title: "Extract the domain: SUBSTRING(s, CHARINDEX('@', s) + 1, LEN(s))",
+  tables: [T], result: { title: "Result", cols: ["Domain"] },
+  steps: [
+    { note: "The string has <b>10</b> characters: <code>LEN(s) = 10</code>." },
+    { note: "<code>CHARINDEX('@', s)</code> scans from the left and finds <b>@ at position 3</b>.", mark: { s: { 2: "y" } } },
+    { note: "Start just after the @: <code>3 + 1 = 4</code>. The length argument 10 is simply 'more than enough', SUBSTRING stops at the end.", mark: { s: { 3: "g" } } },
+    { note: "<code>SUBSTRING(s, 4, 10)</code> returns positions 4 to 10: <b>bank.in</b>.", mark: { s: { 2: "r", ...mk(3, 9, "g") } }, result: [["bank.in"]] }
+  ]
+};
+</script>
+</body></html>

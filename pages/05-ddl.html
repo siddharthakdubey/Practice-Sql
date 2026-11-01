@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DDL commands</title><link rel="stylesheet" href="../assets/style.css"></head>
+<body data-page="05-ddl"><main>
+<h1>DDL commands</h1>
+<p class="lead">Data Definition Language: create, change and remove the <em>structure</em> that holds your data.</p>
+<div class="goals"><b>After this topic you will</b> create tables with proper data types and constraints, alter and drop them, and know how DROP, TRUNCATE and DELETE differ.</div>
+
+<h2>CREATE TABLE</h2>
+<pre class="sql">
+CREATE TABLE Persons (
+    ID        INT           NOT NULL,
+    Name      VARCHAR(50)   NOT NULL,
+    BirthDate DATE          NULL,
+    Phone     VARCHAR(15)   NULL,
+    CONSTRAINT pk_persons PRIMARY KEY (ID)
+);
+</pre>
+<ul>
+<li><b>Table name</b> then a list of <b>column definitions</b>: name, data type, nullability.</li>
+<li><code>NOT NULL</code>: a value is required. <code>NULL</code>: may be missing.</li>
+<li><code>CONSTRAINT pk_persons PRIMARY KEY (ID)</code>: a named rule. Name your constraints; error messages and later ALTERs become readable.</li>
+</ul>
+
+<h2>Data types you will use daily</h2>
+<table class="cmp">
+<tr><th>Group</th><th>Types (T-SQL)</th><th>Notes</th></tr>
+<tr><td>Whole numbers</td><td><code>TINYINT</code> (0-255), <code>SMALLINT</code>, <code>INT</code> (~±2.1 bn), <code>BIGINT</code></td><td>Pick the smallest that safely fits</td></tr>
+<tr><td>Exact decimals</td><td><code>DECIMAL(p,s)</code> / <code>NUMERIC</code>, <code>MONEY</code></td><td><code>DECIMAL(10,2)</code> = 10 digits, 2 after the point. Use for money.</td></tr>
+<tr><td>Approximate</td><td><code>FLOAT</code>, <code>REAL</code></td><td>Binary rounding errors. Never for money.</td></tr>
+<tr><td>Text</td><td><code>CHAR(n)</code> fixed, <code>VARCHAR(n)</code> variable, <code>NVARCHAR(n)</code> Unicode (Hindi, emoji)</td><td><code>VARCHAR(MAX)</code> for long text</td></tr>
+<tr><td>Date/time</td><td><code>DATE</code>, <code>TIME</code>, <code>DATETIME2</code>, <code>DATETIMEOFFSET</code></td><td>Prefer <code>DATETIME2</code> over old <code>DATETIME</code></td></tr>
+<tr><td>Other</td><td><code>BIT</code> (0/1 flag), <code>UNIQUEIDENTIFIER</code> (GUID)</td><td></td></tr>
+</table>
+
+<h2>Constraints: rules the database enforces</h2>
+<table class="cmp">
+<tr><th>Constraint</th><th>Guarantees</th><th>Example</th></tr>
+<tr><td>PRIMARY KEY</td><td>Unique + not null, identifies a row</td><td><code>PRIMARY KEY (ID)</code></td></tr>
+<tr><td>FOREIGN KEY</td><td>Value must exist in the parent table</td><td><code>FOREIGN KEY (CustomerID) REFERENCES Customers(CustomerID)</code></td></tr>
+<tr><td>UNIQUE</td><td>No duplicates (NULLs allowed once in SQL Server)</td><td><code>UNIQUE (Phone)</code></td></tr>
+<tr><td>NOT NULL</td><td>Value required</td><td><code>Name VARCHAR(50) NOT NULL</code></td></tr>
+<tr><td>CHECK</td><td>A condition must be true</td><td><code>CHECK (Salary &gt;= 0)</code></td></tr>
+<tr><td>DEFAULT</td><td>Value used when none supplied</td><td><code>DEFAULT GETDATE()</code></td></tr>
+<tr><td>IDENTITY</td><td>Auto-numbering</td><td><code>ID INT IDENTITY(1,1)</code></td></tr>
+</table>
+<pre class="sql">
+CREATE TABLE Accounts (
+    AccountID  INT IDENTITY(1,1) CONSTRAINT pk_accounts PRIMARY KEY,   -- 1,2,3... automatically
+    Owner      VARCHAR(80)   NOT NULL,
+    Email      VARCHAR(120)  NULL CONSTRAINT uq_accounts_email UNIQUE,
+    Balance    DECIMAL(12,2) NOT NULL CONSTRAINT df_accounts_balance DEFAULT 0,
+    Status     VARCHAR(10)   NOT NULL CONSTRAINT ck_accounts_status CHECK (Status IN ('Active','Frozen','Closed')),
+    CreatedAt  DATETIME2     NOT NULL CONSTRAINT df_accounts_created DEFAULT SYSDATETIME()
+);
+</pre>
+<p>See the constraints guard a table, one insert at a time:</p>
+<div class="viz" data-id="constraints"></div>
+
+<h2>ALTER TABLE: change an existing table</h2>
+<pre class="sql">
+ALTER TABLE Persons ADD Email VARCHAR(100) NULL;                 -- add a column
+ALTER TABLE Persons ALTER COLUMN Phone VARCHAR(20) NULL;         -- change type / size
+ALTER TABLE Persons DROP COLUMN Email;                           -- remove a column (data lost!)
+ALTER TABLE Persons ADD CONSTRAINT ck_age CHECK (BirthDate &gt; '1900-01-01');
+ALTER TABLE Persons DROP CONSTRAINT ck_age;
+EXEC sp_rename 'Persons.Phone', 'Mobile', 'COLUMN';              -- rename (T-SQL specific)
+</pre>
+<div class="callout warn"><b>Adding a NOT NULL column to a table with rows</b>fails unless you give a DEFAULT, because existing rows would have no value. On big tables ALTER can lock the table: do it in a quiet window.</div>
+
+<h2>DROP, TRUNCATE, DELETE: three ways to remove</h2>
+<table class="cmp">
+<tr><th></th><th>DELETE</th><th>TRUNCATE TABLE</th><th>DROP TABLE</th></tr>
+<tr><td>Family</td><td>DML</td><td>DDL</td><td>DDL</td></tr>
+<tr><td>Removes</td><td>Chosen rows (WHERE)</td><td>All rows</td><td>Rows <em>and</em> the table</td></tr>
+<tr><td>WHERE allowed</td><td>Yes</td><td>No</td><td>No</td></tr>
+<tr><td>Speed on big table</td><td>Slow (logs each row)</td><td>Very fast</td><td>Very fast</td></tr>
+<tr><td>Resets IDENTITY</td><td>No</td><td>Yes</td><td>n/a</td></tr>
+<tr><td>Fires DELETE triggers</td><td>Yes</td><td>No</td><td>No</td></tr>
+<tr><td>Can roll back</td><td colspan="3">Yes inside a transaction, in SQL Server (unlike Oracle/MySQL for DDL)</td></tr>
+</table>
+<pre class="sql">
+TRUNCATE TABLE Persons;
+DROP TABLE Persons;
+DROP TABLE IF EXISTS Persons;      -- no error if it is not there (SQL Server 2016+)
+</pre>
+
+<h2>Good design basics</h2>
+<ul>
+<li><b>One fact in one place</b> (normalisation): store a customer's country once in <code>Customers</code>, not in every order; link by key.</li>
+<li>Every table gets a <b>primary key</b>.</li>
+<li>Choose the <b>narrowest correct type</b>; use <code>DECIMAL</code> for money and <code>DATE</code> for dates, never text.</li>
+<li>Let the database enforce rules (constraints) rather than trusting every application.</li>
+<li>Name consistently: <code>pk_</code>, <code>fk_</code>, <code>uq_</code>, <code>ck_</code>, <code>df_</code> prefixes.</li>
+</ul>
+
+<div class="ex"><b>Try it</b>
+<p>1) Create a table <code>Branches</code> (BranchID identity PK, Name unique not null, OpenedOn date default today). 2) Insert a duplicate Name and read the error. 3) Add a column <code>City</code>. 4) Drop the table. Note the error numbers (2627 = unique violation).</p></div>
+</main>
+<script src="../assets/course.js"></script>
+<script>
+VIZ.constraints = {
+  title: "Inserting into Persons (ID is the primary key, Name is NOT NULL, Age must be 0-120)",
+  query: "CREATE TABLE Persons (ID INT PRIMARY KEY,\n  Name VARCHAR(50) NOT NULL,\n  Age  INT CHECK (Age BETWEEN 0 AND 120));",
+  result: { title: "Persons (the table)", cols: ["ID","Name","Age"] },
+  steps: [
+    { note: "The table is created. It is empty, but it already knows its rules." },
+    { note: "<code>INSERT (1,'Asha',30)</code> passes every rule: accepted.", add: [[1,"Asha",30]] },
+    { note: "<code>INSERT (1,'Ravi',25)</code>: ID 1 already exists, <b>PRIMARY KEY violation</b>. Rejected, the table is unchanged." },
+    { note: "<code>INSERT (2, NULL, 40)</code>: Name is NOT NULL, <b>rejected</b>." },
+    { note: "<code>INSERT (3,'Meena',150)</code>: fails <b>CHECK</b> (Age between 0 and 120). Rejected." },
+    { note: "<code>INSERT (2,'Ravi',NULL)</code>: Age has no NOT NULL, so NULL is fine (a CHECK passes when the result is unknown). Accepted.", add: [[2,"Ravi",null]] }
+  ]
+};
+</script>
+</body></html>

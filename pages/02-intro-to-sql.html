@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Introduction to SQL</title><link rel="stylesheet" href="../assets/style.css"></head>
+<body data-page="02-intro-to-sql"><main>
+<h1>Introduction to SQL</h1>
+<p class="lead">What a database is, what SQL is, and what actually happens between pressing F5 and seeing rows.</p>
+<div class="goals"><b>After this topic you will</b> explain: database vs DBMS vs SQL, tables/rows/columns/keys, the five SQL command families (DDL, DML, DQL, DCL, TCL), and the client-server path of a query.</div>
+
+<h2>Data, database, DBMS, SQL</h2>
+<table class="cmp">
+<tr><th>Term</th><th>Meaning</th><th>Example</th></tr>
+<tr><td>Data</td><td>Raw facts</td><td>"Kevin", 900, "USA"</td></tr>
+<tr><td>Database</td><td>Organised, persistent collection of data</td><td><code>MyDatabase</code></td></tr>
+<tr><td>DBMS / RDBMS</td><td>Software that stores the database, enforces rules, handles many users, recovers from crashes</td><td>SQL Server, PostgreSQL, Oracle, MySQL</td></tr>
+<tr><td>SQL</td><td>Structured Query Language: the language you use to talk to a relational DBMS</td><td><code>SELECT * FROM Customers</code></td></tr>
+</table>
+<div class="callout note"><b>Dialects</b>SQL is a standard (ANSI), but each product adds its own flavour. SQL Server's is <b>T-SQL</b> (<code>TOP</code>, <code>GETDATE()</code>, <code>[brackets]</code>). The ideas transfer, the small syntax differs. Where it matters, this course names the difference.</div>
+
+<h2>Relational model: tables, rows, columns, keys</h2>
+<div class="tbl" data-src="customers" data-hl="0"></div>
+<ul>
+<li><b>Table</b>: one kind of thing (customers).</li>
+<li><b>Column</b> (field): one attribute with a data type (<code>Score</code> is <code>INT</code>).</li>
+<li><b>Row</b> (record): one instance (Kevin).</li>
+<li><b>Primary key</b> (orange column): uniquely identifies a row. Never NULL, never repeated.</li>
+<li><b>Foreign key</b>: a column that refers to another table's primary key. <code>Orders.ProductID</code> refers to <code>Products.ProductID</code>. This is how tables are linked, and what joins use.</li>
+<li><b>NULL</b>: "unknown / missing". Mary has no LastName, Anna has no Score. NULL is not zero and not an empty string.</li>
+</ul>
+
+<h2>The five families of SQL commands</h2>
+<table class="cmp">
+<tr><th>Family</th><th>Purpose</th><th>Commands</th><th>Topic</th></tr>
+<tr><td><b>DQL</b> Query</td><td>Read data</td><td>SELECT</td><td>4</td></tr>
+<tr><td><b>DDL</b> Definition</td><td>Create/alter/drop <em>structure</em></td><td>CREATE, ALTER, DROP, TRUNCATE</td><td>5</td></tr>
+<tr><td><b>DML</b> Manipulation</td><td>Change <em>rows</em></td><td>INSERT, UPDATE, DELETE, MERGE</td><td>6</td></tr>
+<tr><td><b>DCL</b> Control</td><td>Permissions</td><td>GRANT, REVOKE, DENY</td><td>(33)</td></tr>
+<tr><td><b>TCL</b> Transaction</td><td>Group changes into all-or-nothing units</td><td>BEGIN TRAN, COMMIT, ROLLBACK</td><td>6, 28</td></tr>
+</table>
+
+<h2>What happens when you run a query</h2>
+<div class="viz" data-id="path"></div>
+<p>The <b>optimizer</b> is the clever part: it picks the cheapest way to get your answer (which index, which join algorithm, which order). You see its choice in the execution plan (topic 31).</p>
+
+<h2>Why SQL, and why it lasts</h2>
+<ul>
+<li>Declarative: you state the result, the engine does the work.</li>
+<li>Same skill across SQL Server, PostgreSQL, Oracle, MySQL, Snowflake, BigQuery, Spark SQL.</li>
+<li>Used by developers, analysts, data engineers, testers and auditors alike.</li>
+<li>Over 50 years old and still the main way to query business data.</li>
+</ul>
+
+<h2>Your first query</h2>
+<pre class="sql">
+SELECT *
+FROM Customers;
+</pre>
+<p>Read it aloud: "<em>select all columns from the Customers table</em>". The <code>*</code> means every column. The semicolon ends the statement (optional in T-SQL, but a good habit and required before some keywords).</p>
+
+<div class="ex"><b>Try it</b><p>Classify each as DDL, DML, DQL, DCL or TCL: <code>DROP TABLE Orders</code>, <code>UPDATE Customers SET Score = 0</code>, <code>COMMIT</code>, <code>GRANT SELECT ON Orders TO analyst</code>. (DDL, DML, TCL, DCL.)</p></div>
+</main>
+<script src="../assets/course.js"></script>
+<script>
+VIZ.path = {
+  title: "The life of a query",
+  steps: [
+    { note: "<b>1. Client</b>: you type <code>SELECT * FROM Customers WHERE Country='USA'</code> in SSMS (or your application sends it) over a network connection." },
+    { note: "<b>2. Parse</b>: the server checks the grammar. A typo like <code>SELET</code> fails here." },
+    { note: "<b>3. Bind / resolve</b>: does table <code>Customers</code> exist? Do you have permission? Do the columns exist and what are their types?" },
+    { note: "<b>4. Optimize</b>: the optimizer considers several plans (scan the table, or use an index?) and picks the cheapest using statistics about the data." },
+    { note: "<b>5. Execute</b>: the engine reads data pages from memory (buffer cache) or disk, filters, joins, sorts, as the plan says." },
+    { note: "<b>6. Return</b>: the result set streams back to the client and you see the grid." }
+  ]
+};
+</script>
+</body></html>

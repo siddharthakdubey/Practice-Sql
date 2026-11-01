@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Common Table Expressions</title><link rel="stylesheet" href="../assets/style.css"></head>
+<body data-page="24-cte"><main>
+<h1>Common Table Expressions (CTE)</h1>
+<p class="lead">Name a subquery with <code>WITH</code>, read your SQL top to bottom, chain steps, and walk hierarchies with recursion.</p>
+<div class="goals"><b>After this topic you will</b> write single and chained CTEs, use a CTE to filter window results, build recursive CTEs (counters, date series, org charts), and know the limits of a CTE.</div>
+
+<h2>Syntax</h2>
+<pre class="sql">
+WITH cte_name (optional, column, list) AS (
+    SELECT ...                      -- any SELECT
+)
+SELECT * FROM cte_name;             -- the main query using it
+</pre>
+<ul>
+<li>A CTE is a <b>named, temporary result set</b> that exists only for the <b>one statement</b> that follows (SELECT, INSERT, UPDATE, DELETE or MERGE).</li>
+<li>Nothing is stored. It is like giving a derived table (topic 23) a name and putting it above the main query.</li>
+<li>If a statement before <code>WITH</code> is on the same batch, end it with <code>;</code> (SQL Server demands it).</li>
+</ul>
+<pre class="sql">
+WITH customer_totals AS (
+    SELECT CustomerID, SUM(Sales) AS Total, COUNT(*) AS Orders
+    FROM Orders
+    GROUP BY CustomerID
+)
+SELECT c.FirstName, t.Total, t.Orders
+FROM customer_totals t
+JOIN Customers c ON c.CustomerID = t.CustomerID
+WHERE t.Total &gt; 60
+ORDER BY t.Total DESC;
+</pre>
+<div class="tbl" data-title="Result">
+FirstName | Total | Orders
+Mary | 100 | 2
+Mark | 85 | 2
+Kevin | 65 | 3
+</div>
+
+<h2>Chained CTEs: one builds on the previous</h2>
+<pre class="sql">
+WITH delivered AS (
+    SELECT CustomerID, Sales FROM Orders WHERE OrderStatus = 'Delivered'
+),
+per_customer AS (
+    SELECT CustomerID, SUM(Sales) AS Total FROM delivered GROUP BY CustomerID   -- uses the CTE above
+),
+avg_all AS (
+    SELECT AVG(Total) AS AvgTotal FROM per_customer
+)
+SELECT p.CustomerID, p.Total, a.AvgTotal
+FROM per_customer p CROSS JOIN avg_all a        -- avg_all has one row: crossing it is safe
+WHERE p.Total &gt; a.AvgTotal;
+</pre>
+<div class="tbl" data-title="Result (delivered totals: 1 = 60, 2 = 45, 4 = 85; average 63.33)">
+CustomerID | Total | AvgTotal
+4 | 85 | 63.333333
+</div>
+<ul>
+<li>Separate CTEs with commas; <code>WITH</code> is written once.</li>
+<li>A CTE can use earlier CTEs, never later ones.</li>
+<li>The same CTE can be referenced several times (self-join, two uses).</li>
+</ul>
+
+<h2>CTE vs subquery vs view: why bother?</h2>
+<ul>
+<li><b>Readability</b>: steps named and ordered top to bottom instead of nested inside-out.</li>
+<li><b>Reuse inside one statement</b>: write once, refer many times.</li>
+<li><b>Filtering on window functions</b> (topic 18, 20) and on aggregates of aggregates.</li>
+<li><b>Recursion</b>: only a CTE can reference itself.</li>
+</ul>
+<div class="callout note"><b>Performance honesty</b>In SQL Server a non-recursive CTE is <em>inlined</em>, like a subquery: it is <b>not</b> saved or cached, and if you reference it twice it may be computed twice. It does not make a query faster. If the same heavy intermediate result is used many times, a temp table can be better (topic 26, 27).</div>
+
+<h2>CTE for data changes</h2>
+<pre class="sql">
+WITH ranked AS (
+    SELECT *, ROW_NUMBER() OVER (PARTITION BY CustomerID, ProductID ORDER BY OrderID) AS rn FROM Orders
+)
+DELETE FROM ranked WHERE rn &gt; 1;                -- removes duplicates, keeps the first of each pair
+</pre>
+
+<h2>Recursive CTE: a query that calls itself</h2>
+<p>Two parts joined by <code>UNION ALL</code>: the <b>anchor</b> (starting rows) and the <b>recursive member</b> (reads the rows produced in the previous round). It stops when a round produces no new rows.</p>
+<h3>Example 1: count 1 to 5</h3>
+<pre class="sql">
+WITH numbers AS (
+    SELECT 1 AS n                         -- anchor: start
+    UNION ALL
+    SELECT n + 1 FROM numbers WHERE n &lt; 5   -- recursive member + stopping condition
+)
+SELECT n FROM numbers;                    -- 1, 2, 3, 4, 5
+</pre>
+<h3>Example 2: a calendar of dates (fills gaps in reports)</h3>
+<pre class="sql">
+WITH days AS (
+    SELECT CAST('2025-03-01' AS DATE) AS d
+    UNION ALL
+    SELECT DATEADD(DAY, 1, d) FROM days WHERE d &lt; '2025-03-31'
+)
+SELECT d FROM days OPTION (MAXRECURSION 400);   -- default limit is 100 rounds; 0 = unlimited (careful!)
+</pre>
+<h3>Example 3: the org chart (hierarchy walk)</h3>
+<pre class="sql">
+WITH org AS (
+    SELECT EmployeeID, FirstName, ManagerID, 0 AS Level,
+           CAST(FirstName AS VARCHAR(200)) AS Path
+    FROM Employees WHERE ManagerID IS NULL                       -- anchor: the top boss
+
+    UNION ALL
+
+    SELECT e.EmployeeID, e.FirstName, e.ManagerID, o.Level + 1,
+           CAST(o.Path + ' &gt; ' + e.FirstName AS VARCHAR(200))
+    FROM Employees e
+    JOIN org o ON e.ManagerID = o.EmployeeID                     -- employees whose manager was found last round
+)
+SELECT Level, REPLICATE('   ', Level) + FirstName AS Person, Path FROM org ORDER BY Path;
+</pre>
+<div class="viz" data-id="org"></div>
+<div class="tbl" data-title="Result">
+Level | Person | Path
+0 | Frank | Frank
+1 | &nbsp;&nbsp;Kevin | Frank &gt; Kevin
+2 | &nbsp;&nbsp;&nbsp;&nbsp;Michael | Frank &gt; Kevin &gt; Michael
+1 | &nbsp;&nbsp;Mary | Frank &gt; Mary
+2 | &nbsp;&nbsp;&nbsp;&nbsp;Carol | Frank &gt; Mary &gt; Carol
+</div>
+<div class="callout warn"><b>Always have a stopping condition</b>If the data contains a cycle (A manages B manages A) or you forget the <code>WHERE n &lt; 5</code>, the recursion never ends; SQL Server stops it at 100 rounds with an error (<code>MAXRECURSION</code>). Column types in anchor and recursive parts must match exactly (hence the <code>CAST</code> to <code>VARCHAR(200)</code>).</div>
+<p>Uses: org charts, product category trees, bill of materials, folder trees, network paths, generating number and date series.</p>
+
+<h2>Rules</h2>
+<ul>
+<li>No <code>ORDER BY</code> inside a CTE (unless TOP); order in the main query.</li>
+<li>CTE column names must be unique (alias expressions).</li>
+<li>The CTE name hides a real table of the same name inside the statement. Pick unique names.</li>
+<li>Recursive CTEs: anchor first, <code>UNION ALL</code> only, recursive reference exactly once, no aggregates or TOP in the recursive part.</li>
+</ul>
+
+<div class="ex"><b>Try it</b>
+<p>1) Rewrite the topic-23 correlated subquery ("orders above their customer's average") as a CTE plus a join. 2) Generate all 12 month-start dates of 2025 with a recursive CTE, LEFT JOIN monthly sales onto it, and show 0 for months with no orders (April-December). 3) Add a column <code>HeadCount</code> showing how many people report (directly or not) to each manager. 4) Break the recursion on purpose (remove the stop condition) and read the error.</p></div>
+</main>
+<script src="../assets/course.js"></script>
+<script>
+const E = pick(D.employees, ["EmployeeID","FirstName","ManagerID"]);
+VIZ.org = {
+  title: "Recursive CTE: one level of the tree per round",
+  tables: [E], result: { title: "org (the CTE so far)", cols: ["EmployeeID","FirstName","Level"] },
+  steps: [
+    { note: "Nothing has run yet. The CTE has an <b>anchor</b> (the top boss) and a <b>recursive member</b> (people whose manager is already in the result)." },
+    { note: "<b>Anchor:</b> <code>WHERE ManagerID IS NULL</code> finds Frank. Level 0.", mark: { employees: { 0: "y" } }, add: [[1, "Frank", 0]] },
+    { note: "<b>Round 1:</b> join Employees to the rows from the last round (Frank). Whoever has <code>ManagerID = 1</code> is added: Kevin and Mary, Level 1.",
+      mark: { employees: { 0: "b", 1: "g", 2: "g" } }, add: [[2, "Kevin", 1], [3, "Mary", 1]] },
+    { note: "<b>Round 2:</b> now the previous round is Kevin and Mary. ManagerID = 2 gives Michael; ManagerID = 3 gives Carol. Level 2.",
+      mark: { employees: { 1: "b", 2: "b", 3: "g", 4: "g" } }, add: [[4, "Michael", 2], [5, "Carol", 2]] },
+    { note: "<b>Round 3:</b> nobody has ManagerID 4 or 5. The recursive member returns <b>no rows</b>, so the recursion stops.", mark: { employees: { 3: "b", 4: "b" } } },
+    { note: "The CTE now holds the whole tree (5 rows). The main query reads it like a normal table." }
+  ]
+};
+</script>
+</body></html>

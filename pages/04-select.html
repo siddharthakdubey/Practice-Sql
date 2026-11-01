@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Query data (SELECT)</title><link rel="stylesheet" href="../assets/style.css"></head>
+<body data-page="04-select"><main>
+<h1>Query data (SELECT)</h1>
+<p class="lead">The most used statement in SQL. Learn each clause, then the order the engine really runs them.</p>
+<div class="goals"><b>After this topic you will</b> write SELECT with FROM, WHERE, GROUP BY, HAVING, ORDER BY, DISTINCT, TOP and OFFSET-FETCH, use aliases and static values, and explain the <em>logical processing order</em>.</div>
+
+<p>Data used:</p>
+<div class="tbl" data-src="customers"></div>
+
+<h2>1. SELECT and FROM</h2>
+<pre class="sql">
+SELECT * FROM Customers;                          -- every column, every row
+SELECT FirstName, Country FROM Customers;         -- only chosen columns
+</pre>
+<div class="tbl" data-title="Result of the second query">
+FirstName | Country
+Jossef | Germany
+Kevin | USA
+Mary | USA
+Mark | Germany
+Anna | USA
+</div>
+<div class="callout tip"><b>Avoid SELECT * in real code</b>It reads columns you do not need (slower, more network), and it breaks when someone adds a column. Use <code>*</code> for quick exploration only.</div>
+
+<h2>2. WHERE: filter rows</h2>
+<pre class="sql">
+SELECT FirstName, Country, Score
+FROM Customers
+WHERE Country = 'USA';
+</pre>
+<div class="tbl" data-title="Result">
+FirstName | Country | Score
+Kevin | USA | 900
+Mary | USA | 750
+Anna | USA | NULL
+</div>
+<p>WHERE keeps rows where the condition is true. (Full details in topic 7.)</p>
+
+<h2>3. ORDER BY: sort the result</h2>
+<pre class="sql">
+SELECT FirstName, Score
+FROM Customers
+ORDER BY Score DESC;           -- highest first. ASC (lowest first) is the default
+</pre>
+<div class="tbl" data-title="Result">
+FirstName | Score
+Kevin | 900
+Mary | 750
+Mark | 500
+Jossef | 350
+Anna | NULL
+</div>
+<div class="callout note"><b>NULLs and sorting</b>SQL Server treats NULL as the <em>smallest</em> value: first in ASC, last in DESC. Other databases differ (PostgreSQL puts NULLs last in ASC).</div>
+<p>Sort by several columns: the second column breaks ties of the first.</p>
+<pre class="sql">
+SELECT Country, FirstName, Score
+FROM Customers
+ORDER BY Country ASC, Score DESC;
+</pre>
+<div class="tbl" data-title="Result">
+Country | FirstName | Score
+Germany | Mark | 500
+Germany | Jossef | 350
+USA | Kevin | 900
+USA | Mary | 750
+USA | Anna | NULL
+</div>
+<p>Without ORDER BY the row order is <b>not guaranteed</b>, even if it looks sorted today. Always sort when order matters.</p>
+
+<h2>4. GROUP BY: one row per group</h2>
+<pre class="sql">
+SELECT Country, SUM(Score) AS TotalScore, COUNT(*) AS Customers
+FROM Customers
+GROUP BY Country;
+</pre>
+<div class="tbl" data-title="Result">
+Country | TotalScore | Customers
+Germany | 850 | 2
+USA | 1650 | 3
+</div>
+<p>Rule: every column in SELECT must be either in GROUP BY or inside an aggregate function (SUM, COUNT, AVG, MIN, MAX). Anna's NULL score is ignored by SUM, but she is still counted by <code>COUNT(*)</code>. More in topic 17.</p>
+
+<h2>5. HAVING: filter groups</h2>
+<pre class="sql">
+SELECT Country, SUM(Score) AS TotalScore
+FROM Customers
+GROUP BY Country
+HAVING SUM(Score) &gt; 1000;
+</pre>
+<div class="tbl" data-title="Result">
+Country | TotalScore
+USA | 1650
+</div>
+<div class="callout key"><b>WHERE vs HAVING</b>WHERE filters <em>rows before</em> grouping, so it cannot use aggregates. HAVING filters <em>groups after</em> grouping, so it can.</div>
+
+<h2>6. DISTINCT: remove duplicate rows</h2>
+<pre class="sql">SELECT DISTINCT Country FROM Customers;</pre>
+<div class="tbl" data-title="Result">
+Country
+Germany
+USA
+</div>
+<p><code>DISTINCT</code> applies to the whole row of selected columns, not just the first. It needs to sort or hash all rows, so do not sprinkle it on to "fix" duplicates you do not understand; usually a join is the real cause.</p>
+
+<h2>7. TOP and OFFSET-FETCH: limit rows</h2>
+<pre class="sql">
+SELECT TOP 3 FirstName, Score FROM Customers ORDER BY Score DESC;   -- the 3 best
+SELECT TOP 1 WITH TIES ...                                            -- includes rows tied with the last
+SELECT TOP 20 PERCENT * FROM Customers;                               -- top fifth
+
+-- pagination: skip 2, take 2 (ORDER BY is required)
+SELECT FirstName, Score FROM Customers
+ORDER BY Score DESC
+OFFSET 2 ROWS FETCH NEXT 2 ROWS ONLY;
+</pre>
+<div class="tbl" data-title="TOP 3 result">
+FirstName | Score
+Kevin | 900
+Mary | 750
+Mark | 500
+</div>
+<div class="tbl" data-title="OFFSET 2 FETCH 2 result (page 2 of size 2)">
+FirstName | Score
+Mark | 500
+Jossef | 350
+</div>
+<div class="callout warn"><b>TOP without ORDER BY</b>returns "some" rows, not the best rows. Always pair them.</div>
+<p>MySQL/PostgreSQL write <code>LIMIT 3</code> instead of <code>TOP 3</code>.</p>
+
+<h2>8. Aliases, static values, comments</h2>
+<pre class="sql">
+SELECT
+    CustomerID            AS Id,                       -- column alias
+    FirstName + ' ' + LastName AS FullName,            -- expression (NULL if either is NULL!)
+    'Customer'            AS Type,                     -- static value, same on every row
+    Score * 2             AS DoubleScore
+FROM Customers AS c;                                    -- table alias (short name)
+-- single-line comment
+/* multi-line
+   comment */
+</pre>
+<p>Aliases rename things <em>in the output</em> or give short names. A column alias made in SELECT cannot be used in the same query's WHERE (reason below).</p>
+
+<h2>The order SQL really runs (logical processing order)</h2>
+<p>You <em>write</em> SELECT first, but the engine does <em>not</em> start there:</p>
+<table class="cmp">
+<tr><th>Run order</th><th>Clause</th><th>What it does</th></tr>
+<tr><td>1</td><td>FROM / JOIN</td><td>Find the tables, build the starting rows</td></tr>
+<tr><td>2</td><td>WHERE</td><td>Drop rows</td></tr>
+<tr><td>3</td><td>GROUP BY</td><td>Bucket rows</td></tr>
+<tr><td>4</td><td>HAVING</td><td>Drop buckets</td></tr>
+<tr><td>5</td><td>SELECT (incl. window functions, DISTINCT)</td><td>Compute output columns</td></tr>
+<tr><td>6</td><td>ORDER BY</td><td>Sort</td></tr>
+<tr><td>7</td><td>TOP / OFFSET-FETCH</td><td>Cut</td></tr>
+</table>
+<p>This explains why you cannot use a SELECT alias in WHERE (it does not exist yet) but can in ORDER BY (it already exists). Watch the whole flow:</p>
+<div class="viz" data-id="flow"></div>
+
+<h2>Common mistakes</h2>
+<ul>
+<li>Using an aggregate in WHERE: <code>WHERE SUM(Score) &gt; 100</code> fails. Use HAVING.</li>
+<li>Selecting a non-grouped column: <code>SELECT Country, FirstName ... GROUP BY Country</code> fails.</li>
+<li>Expecting order without ORDER BY.</li>
+<li><code>FirstName + ' ' + LastName</code> returns NULL for Mary. Fix with <code>CONCAT</code> or <code>ISNULL</code> (topic 12, 15).</li>
+</ul>
+
+<div class="ex"><b>Try it</b>
+<p>1) List customers from Germany with Score above 400, sorted by name. 2) Find the country with the highest average score. 3) Show the 2nd page (size 2) of customers sorted by FirstName. 4) Change <code>HAVING</code> to <code>WHERE</code> in the earlier GROUP BY example and read the error message.</p></div>
+</main>
+<script src="../assets/course.js"></script>
+<script>
+const cu = pick(D.customers, ["CustomerID","FirstName","Country","Score"]);
+VIZ.flow = {
+  title: "Follow one query through all its clauses",
+  query: "SELECT TOP 1 Country, AVG(Score) AS AvgScore\nFROM Customers\nWHERE Score > 0\nGROUP BY Country\nHAVING AVG(Score) > 100\nORDER BY AvgScore DESC;",
+  tables: [cu],
+  result: { title: "Result", cols: ["Country","AvgScore"] },
+  steps: [
+    { note: "<b>1. FROM Customers</b>: start with all 5 rows." },
+    { note: "<b>2. WHERE Score > 0</b>: Anna's Score is NULL. <code>NULL > 0</code> is not true (it is unknown), so she is dropped.", mark: { customers: {0:"g",1:"g",2:"g",3:"g",4:"r"} } },
+    { note: "<b>3. GROUP BY Country</b>: Germany rows (blue) form one group, USA rows (purple) another.", mark: { customers: {0:"b",1:"p",2:"p",3:"b",4:"r"} } },
+    { note: "<b>4. HAVING AVG(Score) > 100</b>: averages are Germany (350+500)/2 = 425 and USA (900+750)/2 = 825. Both pass. Each group is now ONE row.",
+      mark: { customers: {0:"b",1:"p",2:"p",3:"b",4:"r"} }, result: [["Germany",425],["USA",825]] },
+    { note: "<b>5. SELECT</b>: the output columns are Country and AvgScore (alias created now).", result: [["Germany",425],["USA",825]] },
+    { note: "<b>6. ORDER BY AvgScore DESC</b>: the alias exists, so it can be used. USA first.", result: [["USA",825],["Germany",425]] },
+    { note: "<b>7. TOP 1</b>: keep only the first row. Done.", result: [["USA",825]] }
+  ]
+};
+</script>
+</body></html>

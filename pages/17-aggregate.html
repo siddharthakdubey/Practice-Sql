@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Aggregate functions</title><link rel="stylesheet" href="../assets/style.css"></head>
+<body data-page="17-aggregate"><main>
+<h1>Aggregate functions</h1>
+<p class="lead">Turn many rows into summary rows: COUNT, SUM, AVG, MIN, MAX and the GROUP BY that decides the groups.</p>
+<div class="goals"><b>After this topic you will</b> summarise data with every common aggregate, group by one or several columns, filter groups with HAVING, understand how NULL and DISTINCT affect results, and spot the join "fan-out" error.</div>
+<div class="tbl" data-src="orders" data-cols="OrderID,CustomerID,OrderStatus,Quantity,Sales"></div>
+
+<h2>The five core aggregates</h2>
+<table class="cmp">
+<tr><th>Function</th><th>Returns</th><th>NULLs</th></tr>
+<tr><td><code>COUNT(*)</code></td><td>number of rows</td><td>counted</td></tr>
+<tr><td><code>COUNT(col)</code></td><td>rows where col is not NULL</td><td>ignored</td></tr>
+<tr><td><code>COUNT(DISTINCT col)</code></td><td>number of different non-NULL values</td><td>ignored</td></tr>
+<tr><td><code>SUM(col)</code></td><td>total (numbers only)</td><td>ignored</td></tr>
+<tr><td><code>AVG(col)</code></td><td>sum / count of non-NULL</td><td>ignored</td></tr>
+<tr><td><code>MIN(col) / MAX(col)</code></td><td>smallest / largest (numbers, text, dates)</td><td>ignored</td></tr>
+</table>
+<pre class="sql">
+SELECT COUNT(*)                    AS Orders,          -- 10
+       COUNT(ShipDate)             AS Shipped,         -- 9  (one NULL)
+       COUNT(DISTINCT CustomerID)  AS Buyers,          -- 5  (customers 1,2,3,4 and unknown 6)
+       SUM(Sales)                  AS Revenue,         -- 400
+       AVG(Sales)                  AS AvgOrder,        -- 40
+       MIN(OrderDate)              AS FirstOrder,      -- 2025-01-01
+       MAX(Sales)                  AS BiggestOrder     -- 90
+FROM Orders;
+</pre>
+<div class="callout warn"><b>AVG of integers</b>On an INT column AVG returns an INT (decimals dropped). The ten quantities add up to 19, so <code>AVG(Quantity)</code> returns <b>1</b>, while <code>AVG(Quantity * 1.0)</code> returns <b>1.9</b>.</div>
+
+<h2>GROUP BY: one result row per group</h2>
+<pre class="sql">
+SELECT CustomerID, COUNT(*) AS Orders, SUM(Sales) AS Total
+FROM   Orders
+GROUP BY CustomerID;
+</pre>
+<div class="viz" data-id="group"></div>
+<table class="cmp">
+<tr><th>Rule</th><th>Meaning</th></tr>
+<tr><td>Everything in SELECT is either grouped or aggregated</td><td><code>SELECT CustomerID, OrderStatus, SUM(Sales) ... GROUP BY CustomerID</code> fails: OrderStatus is neither.</td></tr>
+<tr><td>You may group by something not in SELECT</td><td>allowed, but the output is hard to read</td></tr>
+<tr><td>Aggregates can't go in WHERE</td><td>use HAVING</td></tr>
+<tr><td>All NULLs form <b>one</b> group</td><td></td></tr>
+</table>
+
+<h3>Group by several columns</h3>
+<pre class="sql">
+SELECT CustomerID, OrderStatus, COUNT(*) AS Orders, SUM(Sales) AS Total
+FROM Orders
+GROUP BY CustomerID, OrderStatus
+ORDER BY CustomerID, OrderStatus;
+</pre>
+<div class="tbl" data-title="Result: a group is each distinct pair">
+CustomerID | OrderStatus | Orders | Total
+1 | Delivered | 2 | 60
+2 | Delivered | 2 | 45
+2 | Shipped | 1 | 20
+3 | Processing | 1 | 40
+3 | Shipped | 1 | 60
+4 | Delivered | 2 | 85
+6 | Shipped | 1 | 90
+</div>
+
+<h2>HAVING: filter the groups</h2>
+<pre class="sql">
+SELECT CustomerID, SUM(Sales) AS Total
+FROM Orders
+WHERE OrderStatus &lt;&gt; 'Processing'      -- rows first
+GROUP BY CustomerID
+HAVING SUM(Sales) &gt; 70                   -- then groups
+ORDER BY Total DESC;
+</pre>
+<div class="tbl" data-title="Result">
+CustomerID | Total
+6 | 90
+4 | 85
+</div>
+<p>Customer 3's 60 (Shipped only, Processing removed by WHERE) and customer 2's 65 and customer 1's 60 are all below 70. Put row filters in WHERE (cheaper: fewer rows to group), group filters in HAVING.</p>
+
+<h2>More aggregates</h2>
+<pre class="sql">
+SELECT Country,
+       STRING_AGG(FirstName, ', ') AS People,       -- join text from rows into one string
+       STDEV(Score) AS StdDev, VAR(Score) AS Variance   -- statistics
+FROM Customers GROUP BY Country;
+
+SELECT COUNT_BIG(*), CHECKSUM_AGG(CHECKSUM(*)) FROM Orders;     -- bigger counts, quick change detection
+</pre>
+
+<h2>Subtotals and grand totals: ROLLUP, CUBE, GROUPING SETS</h2>
+<pre class="sql">
+SELECT Country, SUM(Score) AS TotalScore
+FROM Customers
+GROUP BY ROLLUP (Country);
+</pre>
+<div class="tbl" data-title="Result: one extra grand-total row (Country is NULL)">
+Country | TotalScore
+Germany | 850
+USA | 1650
+NULL | 2500
+</div>
+<p><code>ROLLUP(a, b)</code> adds subtotals for a then a grand total. <code>CUBE(a, b)</code> gives all combinations. <code>GROUPING SETS ((a), (b), ())</code> lets you choose. <code>GROUPING(col)</code> returns 1 on the rows that are subtotals, so you can label them: <code>CASE WHEN GROUPING(Country)=1 THEN 'ALL' ELSE Country END</code>.</p>
+
+<h2>The fan-out trap (wrong totals after a join)</h2>
+<pre class="sql">
+-- WRONG: each customer's Score is repeated once per order
+SELECT SUM(c.Score) FROM Customers c JOIN Orders o ON o.CustomerID = c.CustomerID;
+-- Kevin's 900 is added 3 times, Mary's 750 twice ...: 5,900 instead of the true 2,500 (customers 1 to 4)
+</pre>
+<div class="callout key"><b>Rule</b>Before summing a column, ask: "is this column unique per row after my join?" If not, aggregate each table separately <em>first</em> (CTE or subquery) and then join the summaries. Always compare the row count before and after a join.</div>
+
+<h2>Order of work</h2>
+<p><code>FROM/JOIN → WHERE → GROUP BY → aggregates → HAVING → SELECT → ORDER BY</code>. Aggregates are computed inside the group step. Window functions (next topics) come later, after GROUP BY.</p>
+
+<div class="ex"><b>Try it</b>
+<p>1) Number of orders and revenue per OrderStatus. 2) The product with the highest total quantity. 3) Customers with at least 2 orders (HAVING COUNT(*) &gt;= 2). 4) Average order value per month. 5) Prove the fan-out: compute <code>SUM(Score)</code> correctly vs after joining Orders.</p></div>
+</main>
+<script src="../assets/course.js"></script>
+<script>
+const o = pick(D.orders, ["OrderID","CustomerID","Sales"]);
+const cls = { 1: "b", 2: "p", 3: "o", 4: "g", 6: "y" };
+const groups = {}; o.rows.forEach((r, i) => (groups[r[1]] = groups[r[1]] || []).push(i));
+const allMark = {}; o.rows.forEach((r, i) => allMark[i] = cls[r[1]]);
+const keys = Object.keys(groups).map(Number).sort((a, b) => a - b);
+VIZ.group = {
+  title: "GROUP BY CustomerID with COUNT and SUM",
+  tables: [o], result: { title: "Result", cols: ["CustomerID","Orders","Total"] },
+  steps: [
+    { note: "Start with the 10 order rows." },
+    { note: "<b>GROUP BY CustomerID</b>: rows with the same CustomerID go into the same bucket (same colour): five buckets.", mark: { orders: allMark } },
+    ...keys.map(k => {
+      const idx = groups[k], tot = idx.reduce((s, i) => s + o.rows[i][2], 0), m = {};
+      idx.forEach(i => m[i] = cls[k]);
+      return { note: "Bucket <b>" + k + "</b> has " + idx.length + " row(s): " + idx.map(i => o.rows[i][2]).join(" + ") + " = <b>" + tot + "</b>. It collapses into one result row" + (k === 6 ? " (customer 6 is not in Customers, but GROUP BY does not care)" : "") + ".",
+        mark: { orders: m }, add: [[k, idx.length, tot]] };
+    }),
+    { note: "5 groups, 5 result rows. Every bucket is now a single row; individual orders can no longer be shown in this query." }
+  ]
+};
+</script>
+</body></html>

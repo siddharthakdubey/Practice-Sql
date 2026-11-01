@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Views</title><link rel="stylesheet" href="../assets/style.css"></head>
+<body data-page="25-views"><main>
+<h1>Views</h1>
+<p class="lead">A view is a saved query that behaves like a table. It stores the <em>definition</em>, not the data.</p>
+<div class="goals"><b>After this topic you will</b> create, change and drop views, use them to simplify queries and restrict access, know when a view can be updated, and understand indexed (materialised) views.</div>
+
+<h2>Create a view</h2>
+<pre class="sql">
+CREATE VIEW dbo.v_DeliveredOrders AS
+SELECT OrderID, CustomerID, ProductID, OrderDate, Sales
+FROM   Orders
+WHERE  OrderStatus = 'Delivered';
+GO                                   -- CREATE VIEW must be the only statement in its batch
+
+SELECT * FROM dbo.v_DeliveredOrders WHERE Sales &gt; 30;       -- use it exactly like a table
+</pre>
+<div class="tbl" data-title="Result">
+OrderID | CustomerID | ProductID | OrderDate | Sales
+1005 | 4 | 102 | 2025-02-01 | 40
+1008 | 1 | 105 | 2025-03-01 | 50
+1010 | 4 | 104 | 2025-03-15 | 45
+</div>
+<ul>
+<li>Nothing is copied. Every time you query the view, SQL Server <b>substitutes its SELECT</b> into your query and runs the lot against the base tables.</li>
+<li>So a view is always up to date.</li>
+</ul>
+<div class="viz" data-id="view"></div>
+
+<h2>Change and remove</h2>
+<pre class="sql">
+CREATE OR ALTER VIEW dbo.v_DeliveredOrders AS      -- SQL Server 2016 SP1+: create or replace in one step
+SELECT OrderID, CustomerID, Sales FROM Orders WHERE OrderStatus = 'Delivered';
+
+ALTER VIEW dbo.v_DeliveredOrders AS ...;            -- older way
+DROP VIEW IF EXISTS dbo.v_DeliveredOrders;
+EXEC sp_helptext 'dbo.v_DeliveredOrders';           -- show the definition
+</pre>
+
+<h2>Why use views</h2>
+<table class="cmp">
+<tr><th>Reason</th><th>Example</th></tr>
+<tr><td><b>Reuse &amp; one source of truth</b></td><td>"Delivered" logic written once; fix it in one place</td></tr>
+<tr><td><b>Hide complexity</b></td><td>A 6-table join with calculated columns becomes <code>SELECT * FROM v_OrderDetails</code> for analysts and BI tools</td></tr>
+<tr><td><b>Security: show only some columns/rows</b></td><td>HR view without the salary column; branch managers' view with <code>WHERE Branch = ...</code>. Grant SELECT on the view, not on the table.</td></tr>
+<tr><td><b>Stable interface</b></td><td>Rename or restructure a table; keep the view's old shape so reports do not break</td></tr>
+<tr><td><b>Readable names</b></td><td>Map cryptic column names to business names</td></tr>
+</table>
+<pre class="sql">
+-- a richer reporting view
+CREATE OR ALTER VIEW dbo.v_OrderDetails AS
+SELECT o.OrderID, o.OrderDate, c.FirstName AS Customer, c.Country,
+       p.Product, p.Category, o.Quantity, o.Sales,
+       e.FirstName AS SalesPerson
+FROM       Orders    o
+LEFT JOIN  Customers c ON c.CustomerID = o.CustomerID
+LEFT JOIN  Products  p ON p.ProductID  = o.ProductID
+LEFT JOIN  Employees e ON e.EmployeeID = o.SalesPersonID;
+GO
+SELECT Category, SUM(Sales) FROM dbo.v_OrderDetails GROUP BY Category;   -- simple for the user
+</pre>
+
+<h2>Security with a view</h2>
+<pre class="sql">
+CREATE VIEW dbo.v_EmployeePublic AS
+SELECT EmployeeID, FirstName, LastName, Department FROM Employees;      -- no Salary, no BirthDate
+GO
+GRANT SELECT ON dbo.v_EmployeePublic TO hr_readonly;                     -- DCL (topic 2)
+DENY  SELECT ON dbo.Employees        TO hr_readonly;
+</pre>
+
+<h2>Changing data through a view</h2>
+<p>A simple view on <b>one table</b> without aggregates, DISTINCT, GROUP BY or TOP can accept INSERT/UPDATE/DELETE: SQL Server passes them to the base table. Views with joins, aggregates or calculated columns are generally read-only (or need INSTEAD OF triggers, topic 29).</p>
+<pre class="sql">
+UPDATE dbo.v_DeliveredOrders SET Sales = 22 WHERE OrderID = 1001;      -- updates Orders
+</pre>
+<p><b>The "disappearing row" surprise:</b> you can UPDATE through the view in a way that makes the row fall outside the view's WHERE. Prevent it:</p>
+<pre class="sql">
+CREATE VIEW dbo.v_Delivered AS SELECT OrderID, OrderStatus, Sales FROM Orders WHERE OrderStatus = 'Delivered'
+WITH CHECK OPTION;       -- rejects changes that would make a row invisible to the view (e.g. setting the status to 'Shipped')
+</pre>
+
+<h2>Useful options</h2>
+<table class="cmp">
+<tr><th>Option</th><th>Effect</th></tr>
+<tr><td><code>WITH SCHEMABINDING</code></td><td>Locks the view to the table structure: columns it uses cannot be dropped or changed. Needs two-part names (<code>dbo.Orders</code>). Required for indexed views.</td></tr>
+<tr><td><code>WITH ENCRYPTION</code></td><td>Hides the definition text (not real security; avoid)</td></tr>
+<tr><td><code>WITH CHECK OPTION</code></td><td>Above</td></tr>
+</table>
+
+<h2>Views do not make things faster (usually)</h2>
+<ul>
+<li>A normal view is just stored text; the query is as slow as its SELECT. Stacking views on views hides cost and can produce enormous plans. Keep layers shallow.</li>
+<li><code>ORDER BY</code> is not allowed in a view (unless TOP/OFFSET), because a table has no order. Sort when you <em>query</em> the view.</li>
+<li><code>SELECT *</code> in a view freezes the column list at creation time: columns added later do not appear until you refresh with <code>EXEC sp_refreshview</code>. List columns explicitly.</li>
+</ul>
+
+<h2>Indexed (materialised) views</h2>
+<p>If you put a <b>unique clustered index</b> on a schema-bound view, SQL Server <em>does</em> store its result and keeps it in sync automatically on every change. Reads of heavy aggregates become instant; writes to the base tables get slower.</p>
+<pre class="sql">
+CREATE VIEW dbo.v_SalesByCustomer WITH SCHEMABINDING AS
+SELECT CustomerID, SUM(Sales) AS Total, COUNT_BIG(*) AS Cnt      -- COUNT_BIG(*) is mandatory with GROUP BY
+FROM dbo.Orders WHERE CustomerID IS NOT NULL
+GROUP BY CustomerID;
+GO
+CREATE UNIQUE CLUSTERED INDEX ix_v_SalesByCustomer ON dbo.v_SalesByCustomer (CustomerID);
+</pre>
+<div class="callout note"><b>Restrictions</b>No outer joins, subqueries, DISTINCT, window functions; SUM of nullable columns needs care. Postgres/Oracle call the stored-result concept a <i>materialized view</i> and refresh it on demand instead.</div>
+
+<h2>View vs table vs CTE</h2>
+<table class="cmp">
+<tr><th></th><th>View</th><th>CTE</th><th>Table / temp table</th></tr>
+<tr><td>Stores data</td><td>no (except indexed view)</td><td>no</td><td>yes</td></tr>
+<tr><td>Lifetime</td><td>permanent definition</td><td>one statement</td><td>permanent / session</td></tr>
+<tr><td>Shared with others</td><td>yes</td><td>no</td><td>yes / no</td></tr>
+</table>
+
+<div class="ex"><b>Try it</b>
+<p>1) Create <code>v_CustomerSummary</code> with customer name, order count and total sales (LEFT JOIN so Anna shows with 0 and NULL-safe). 2) Query it ordered by total. 3) Insert a new order, then query the view again: the new order is reflected without touching the view. 4) Create a view with <code>WITH CHECK OPTION</code> and try to update a row out of it.</p></div>
+</main>
+<script src="../assets/course.js"></script>
+<script>
+const o = pick(D.orders, ["OrderID","CustomerID","OrderStatus","Sales"]);
+const delivered = [[1001,2,20],[1003,1,10],[1005,4,40],[1006,2,25],[1008,1,50],[1010,4,45]];
+const rc = ["OrderID","CustomerID","Sales"];
+VIZ.view = {
+  title: "A view is a stored query, not stored data",
+  query: "CREATE VIEW v_DeliveredOrders AS\nSELECT OrderID, CustomerID, Sales\nFROM Orders WHERE OrderStatus = 'Delivered';",
+  tables: [o], result: { title: "v_DeliveredOrders (no data of its own)", cols: rc },
+  steps: [
+    { note: "<b>1. CREATE VIEW</b> saves only the SELECT text in the database catalog. No rows are copied. The view's result box is empty because nothing has asked for it." },
+    { note: "<b>2. SELECT * FROM v_DeliveredOrders</b>: SQL Server replaces the view name with its definition and runs it against <b>Orders</b>: the Delivered rows (green) are returned.",
+      mark: { orders: {0:"g",1:"r",2:"g",3:"r",4:"g",5:"g",6:"r",7:"g",8:"r",9:"g"} }, rcols: rc, result: delivered },
+    { note: "<b>3. Someone updates the base table:</b> <code>UPDATE Orders SET OrderStatus='Delivered' WHERE OrderID=1002</code>. Order 1002 is now Delivered.",
+      mark: { orders: {1:"y"} } },
+    { note: "<b>4. Query the view again:</b> it re-runs its SELECT, so 1002 appears automatically. Nobody refreshed anything: a normal view is never stale.",
+      mark: { orders: {0:"g",1:"g",2:"g",3:"r",4:"g",5:"g",6:"r",7:"g",8:"r",9:"g"} }, result: [[1001,2,20],[1002,3,60],[1003,1,10],[1005,4,40],[1006,2,25],[1008,1,50],[1010,4,45]] }
+  ]
+};
+</script>
+</body></html>

@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Setup your environment</title><link rel="stylesheet" href="../assets/style.css"></head>
+<body data-page="03-setup"><main>
+<h1>Setup your environment</h1>
+<p class="lead">Install SQL Server and a query tool, create the sample database, and run your first query.</p>
+<div class="goals"><b>After this topic you will</b> have a working SQL Server, a client connected to it, and the <code>MyDatabase</code> sample data loaded.</div>
+
+<h2>What you need</h2>
+<table class="cmp">
+<tr><th>Piece</th><th>What it is</th><th>Get it</th></tr>
+<tr><td>SQL Server (the engine)</td><td>The server process that stores data and runs queries</td><td>Free <b>Developer</b> or <b>Express</b> edition from Microsoft</td></tr>
+<tr><td>SSMS (the client)</td><td>SQL Server Management Studio: a Windows app with a query editor and object explorer</td><td>Free from Microsoft. Alternative: <b>Azure Data Studio</b> or the VS Code <em>MSSQL</em> extension</td></tr>
+</table>
+<div class="callout note"><b>Two parts, always</b>The engine and the client are separate programs. SSMS is only a window; the data lives in the server.</div>
+
+<h2>Option A: install on Windows (simple)</h2>
+<ol>
+<li>Download <b>SQL Server Developer</b> (or Express). Run the installer, choose <b>Basic</b>.</li>
+<li>Note the connection string it shows at the end (usually <code>localhost</code> or <code>localhost\SQLEXPRESS</code>).</li>
+<li>Install <b>SSMS</b>.</li>
+<li>Open SSMS, <b>Server name</b>: <code>localhost</code> (or <code>.\SQLEXPRESS</code>), <b>Authentication</b>: Windows Authentication, tick <b>Trust server certificate</b>, click Connect.</li>
+</ol>
+
+<h2>Option B: Docker (you already use Docker)</h2>
+<pre class="sql">
+docker run -e "ACCEPT_EULA=Y" -e "MSSQL_SA_PASSWORD=Str0ng!Passw0rd" -p 1433:1433 --name sql2022 -d mcr.microsoft.com/mssql/server:2022-latest
+</pre>
+<p>Then connect from SSMS or Azure Data Studio with server <code>localhost,1433</code>, login <code>sa</code> and that password, trust server certificate on. Change the password to your own. Do not reuse a real one; it is only a local learning box.</p>
+
+<h2>Load the sample database</h2>
+<ol>
+<li>In SSMS click <b>New Query</b> (Ctrl+N).</li>
+<li>Open <a href="../sql/00_setup.sql"><code>sql/00_setup.sql</code></a> from this folder (File &gt; Open &gt; File), or paste its contents.</li>
+<li>Press <b>F5</b> (or Execute). Wait for the last grid: <i>Setup complete, 5, 5, 5, 10</i>.</li>
+<li>In Object Explorer press refresh on <b>Databases</b>. You will see <code>MyDatabase</code>.</li>
+</ol>
+
+<h2>Your first queries</h2>
+<pre class="sql">
+USE MyDatabase;          -- choose which database the next statements run in
+GO                       -- tells SSMS: send the batch above to the server now
+
+SELECT * FROM Customers; -- all five customers
+SELECT * FROM Orders;    -- all ten orders
+</pre>
+<ul>
+<li><code>USE</code> switches the current database. You can also pick it in the toolbar dropdown.</li>
+<li><code>GO</code> is <em>not</em> SQL; it is a batch separator understood by SSMS and sqlcmd.</li>
+<li>Highlight one statement and press F5 to run only that selection.</li>
+</ul>
+
+<h2>Useful SSMS habits</h2>
+<table class="cmp">
+<tr><th>Action</th><th>How</th></tr>
+<tr><td>Run selected text / whole script</td><td>F5 or Ctrl+E</td></tr>
+<tr><td>Comment / uncomment lines</td><td>Ctrl+K, Ctrl+C / Ctrl+K, Ctrl+U</td></tr>
+<tr><td>Show estimated execution plan</td><td>Ctrl+L (more in topic 31)</td></tr>
+<tr><td>Show actual plan on run</td><td>Ctrl+M, then F5</td></tr>
+<tr><td>See table structure</td><td>Select name, press Alt+F1 (runs <code>sp_help</code>)</td></tr>
+</table>
+
+<div class="callout tip"><b>Reset any time</b>Break the data while practising? Just re-run <code>00_setup.sql</code>. It drops and recreates the database.</div>
+
+<div class="callout warn"><b>Common problems</b><ul style="margin:4px 0">
+<li><i>Cannot connect:</i> check the SQL Server service is running (Services app, "SQL Server (MSSQLSERVER)").</li>
+<li><i>Certificate error:</i> tick Trust server certificate.</li>
+<li><i>Invalid object name 'Customers':</i> you are in <code>master</code>. Run <code>USE MyDatabase;</code>.</li></ul></div>
+
+<div class="ex"><b>Try it</b><p>Run <code>SELECT COUNT(*) FROM Orders;</code> and <code>SELECT @@VERSION;</code>. The first should return 10; the second shows your server version.</p></div>
+</main>
+<script src="../assets/course.js"></script>
+</body></html>

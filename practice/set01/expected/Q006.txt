@@ -1,0 +1,12 @@
+﻿OrderItemID|OrderID|ProductName|LineRevenue
+-----------|-------|-----------|-----------
+192|80|Smart Watch|28495.2500
+114|46|Smart Watch|26995.5000
+4|2|Smart Watch|17997.0000
+42|17|Smart Watch|17997.0000
+129|55|Smart Watch|17097.1500
+1|1|Smart Watch|16197.3000
+100|41|Smart Watch|16197.3000
+119|49|Cookware Set|15745.5000
+189|78|Smart Watch|15297.4500
+148|62|Running Shoes|14995.0000

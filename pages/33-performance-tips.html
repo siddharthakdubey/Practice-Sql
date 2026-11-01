@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>30 performance tips</title><link rel="stylesheet" href="../assets/style.css">
+<style>
+.tip30{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:8px 16px;margin:12px 0}
+.tip30 h3{margin:.2em 0;font-size:1.05rem}
+.tip30 h3 span{display:inline-block;background:var(--brand);color:#fff;border-radius:99px;min-width:28px;text-align:center;margin-right:8px;font-size:.9rem;padding:0 6px}
+.tip30 p{margin:.3em 0}
+</style></head>
+<body data-page="33-performance-tips"><main>
+<h1>30 performance tips</h1>
+<p class="lead">Practical habits for fast SQL Server queries, grouped by where the time usually goes. Measure first (topic 31), then apply.</p>
+<div class="goals"><b>After this topic you will</b> have a checklist of 30 concrete changes: what to write instead, and why it is faster.</div>
+<div class="callout key"><b>First law of tuning</b>Make it correct, then measure (<code>SET STATISTICS IO, TIME ON</code>, actual plan), change <em>one</em> thing, measure again. Most gains come from reading fewer rows and fewer pages, not from clever syntax.</div>
+
+<h2>A. Fetching data</h2>
+<div class="tip30"><h3><span>1</span>Select only the columns you need</h3>
+<p>Wide rows mean more pages and more network, and they defeat covering indexes.</p>
+<pre class="sql">-- slow:  SELECT * FROM Orders;
+SELECT OrderID, Sales FROM Orders;</pre></div>
+
+<div class="tip30"><h3><span>2</span>Filter early and hard</h3>
+<p>Put row filters in WHERE (not HAVING) so fewer rows reach grouping and joins. Use <code>HAVING</code> only for aggregate conditions.</p></div>
+
+<div class="tip30"><h3><span>3</span>Limit what you return</h3>
+<p><code>TOP n ... ORDER BY</code> or OFFSET-FETCH for screens and previews. Do not pull a million rows to show ten.</p></div>
+
+<div class="tip30"><h3><span>4</span>Avoid DISTINCT as a bandage</h3>
+<p>If DISTINCT "fixes" duplicates, a join is probably producing them. Fix the join (or use EXISTS). DISTINCT forces a sort or hash.</p></div>
+
+<div class="tip30"><h3><span>5</span>UNION ALL instead of UNION</h3>
+<p>UNION removes duplicates (sort/hash). If sets cannot overlap or duplicates are fine, UNION ALL costs nothing extra.</p></div>
+
+<div class="tip30"><h3><span>6</span>Use EXISTS to test existence, not COUNT</h3>
+<pre class="sql">-- slow: IF (SELECT COUNT(*) FROM Orders WHERE CustomerID = 3) &gt; 0
+IF EXISTS (SELECT 1 FROM Orders WHERE CustomerID = 3)    -- stops at the first match</pre></div>
+
+<h2>B. Filtering</h2>
+<div class="tip30"><h3><span>7</span>Keep predicates sargable</h3>
+<p>No function on the indexed column.</p>
+<pre class="sql">-- slow: WHERE YEAR(OrderDate) = 2025
+WHERE OrderDate &gt;= '2025-01-01' AND OrderDate &lt; '2026-01-01'</pre></div>
+
+<div class="tip30"><h3><span>8</span>No leading wildcards</h3>
+<p><code>LIKE 'Ke%'</code> can seek; <code>LIKE '%vin'</code> must scan. For real text search use Full-Text Search.</p></div>
+
+<div class="tip30"><h3><span>9</span>Match data types</h3>
+<p>Comparing an <code>INT</code> column to <code>'3'</code>, or a <code>VARCHAR</code> column to an <code>NVARCHAR</code> parameter, causes implicit conversion on the column side and kills seeks. Watch for the yellow warning in the plan.</p></div>
+
+<div class="tip30"><h3><span>10</span>Avoid OR across different columns</h3>
+<pre class="sql">-- may scan:  WHERE CustomerID = 3 OR ProductID = 101
+SELECT ... WHERE CustomerID = 3
+UNION ALL
+SELECT ... WHERE ProductID = 101 AND (CustomerID &lt;&gt; 3 OR CustomerID IS NULL)   -- each branch can seek its own index</pre></div>
+
+<div class="tip30"><h3><span>11</span>Prefer NOT EXISTS over NOT IN</h3>
+<p>NOT IN is NULL-unsafe and often slower. Use <code>NOT EXISTS</code> or LEFT JOIN ... IS NULL.</p></div>
+
+<h2>C. Joins</h2>
+<div class="tip30"><h3><span>12</span>Join on indexed, same-typed columns</h3>
+<p>Foreign-key columns (<code>Orders.CustomerID</code>) are the most commonly missing indexes. SQL Server does <b>not</b> index them automatically.</p></div>
+
+<div class="tip30"><h3><span>13</span>Use the join type you mean</h3>
+<p>INNER JOIN when unmatched rows are not wanted (it gives the optimizer more freedom than LEFT JOIN). Do not LEFT JOIN "just in case".</p></div>
+
+<div class="tip30"><h3><span>14</span>Aggregate before joining</h3>
+<p>Summarise the big table first (CTE/derived table), then join the small summary. Avoids fan-out and joins fewer rows (topics 17, 23).</p></div>
+
+<div class="tip30"><h3><span>15</span>Never join without ON</h3>
+<p>An accidental CROSS JOIN multiplies rows. Check the row count after each join.</p></div>
+
+<div class="tip30"><h3><span>16</span>Do not join tables you do not use</h3>
+<p>Remove unused lookups from queries and views; every join costs, even if its columns are not selected (unless the optimizer can prove it is redundant).</p></div>
+
+<h2>D. Aggregation and window functions</h2>
+<div class="tip30"><h3><span>17</span>Replace correlated subqueries with a join or window function</h3>
+<pre class="sql">-- row-by-row feel: (SELECT AVG(Sales) FROM Orders o2 WHERE o2.CustomerID = o.CustomerID)
+AVG(Sales) OVER (PARTITION BY CustomerID)        -- one pass</pre></div>
+
+<div class="tip30"><h3><span>18</span>Index the columns in PARTITION BY and ORDER BY of windows</h3>
+<p>An index on <code>(CustomerID, OrderDate)</code> lets <code>ROW_NUMBER() OVER (PARTITION BY CustomerID ORDER BY OrderDate)</code> skip the Sort.</p></div>
+
+<div class="tip30"><h3><span>19</span>Write ROWS, not the default RANGE, for running totals</h3>
+<p><code>ROWS UNBOUNDED PRECEDING</code> is far faster than the default RANGE frame in SQL Server (topic 19).</p></div>
+
+<div class="tip30"><h3><span>20</span>One pass with conditional aggregation</h3>
+<pre class="sql">-- instead of three queries or three subqueries:
+SELECT SUM(CASE WHEN OrderStatus='Delivered' THEN Sales END) AS Delivered,
+       SUM(CASE WHEN OrderStatus='Shipped'   THEN Sales END) AS Shipped
+FROM Orders;</pre></div>
+
+<h2>E. Writing data</h2>
+<div class="tip30"><h3><span>21</span>Set-based, not row-by-row</h3>
+<p>One <code>UPDATE ... WHERE</code> beats a cursor or WHILE loop updating one row at a time by orders of magnitude.</p></div>
+
+<div class="tip30"><h3><span>22</span>Batch large changes</h3>
+<p>Deleting or updating millions of rows in one statement bloats the log and locks the table. Do it in chunks:</p>
+<pre class="sql">WHILE 1 = 1
+BEGIN
+    DELETE TOP (10000) FROM Logs WHERE CreatedAt &lt; '2025-01-01';
+    IF @@ROWCOUNT = 0 BREAK;
+END;</pre></div>
+
+<div class="tip30"><h3><span>23</span>Insert many rows per statement</h3>
+<p>One <code>INSERT ... VALUES (..),(..),(..)</code> or <code>INSERT ... SELECT</code> instead of thousands of single-row inserts. For huge loads use <code>BULK INSERT</code> / bcp / minimal logging.</p></div>
+
+<div class="tip30"><h3><span>24</span>Keep transactions short</h3>
+<p>Locks are held until COMMIT. Do reads and calculations first, then open the transaction for the quick writes; never wait for user input inside one.</p></div>
+
+<div class="tip30"><h3><span>25</span>TRUNCATE instead of DELETE for whole tables</h3>
+<p>Deallocates pages, minimal logging (topic 5).</p></div>
+
+<h2>F. Indexing, design and tooling</h2>
+<div class="tip30"><h3><span>26</span>Index what you filter, join, group and order by, and no more</h3>
+<p>Create covering indexes for hot queries with <code>INCLUDE</code>. Drop unused and duplicate indexes: each one slows every write (topic 30).</p></div>
+
+<div class="tip30"><h3><span>27</span>Choose the right data types</h3>
+<p>Smallest type that fits (<code>INT</code> not <code>BIGINT</code>, <code>DATE</code> not <code>DATETIME</code>, <code>VARCHAR</code> not <code>NVARCHAR</code> if no Unicode needed). Narrow rows = more rows per page = fewer reads. Index keys especially.</p></div>
+
+<div class="tip30"><h3><span>28</span>Keep statistics fresh and watch fragmentation</h3>
+<p>Stale statistics cause bad plans (estimated 1 row, actual 1 million). <code>UPDATE STATISTICS</code>, auto-update on, scheduled index maintenance (rebuild vs reorganise by fragmentation).</p></div>
+
+<div class="tip30"><h3><span>29</span>Materialise expensive repeated work</h3>
+<p>Temp table for intermediate results reused several times, summary tables or indexed views for heavy, stable aggregates, partitioning for huge time-based tables (topics 26, 25, 32). Avoid scalar user-defined functions in WHERE/SELECT on big sets (they run row by row and can block parallelism); prefer inline table-valued functions.</p></div>
+
+<div class="tip30"><h3><span>30</span>Read the execution plan, and test with realistic data</h3>
+<p>Look for scans on big tables, key lookups, spills, and estimate-vs-actual gaps (topic 31). A query that flies on 10 rows can crawl on 10 million: tune against production-sized copies.</p></div>
+
+<h2>Quick triage flow</h2>
+<table class="cmp">
+<tr><th>Symptom</th><th>First things to check</th></tr>
+<tr><td>One query is slow</td><td>actual plan: scan vs seek, key lookups, estimate gaps; tips 7-9, 12, 26</td></tr>
+<tr><td>Fast alone, slow under load</td><td>blocking and long transactions (24), missing indexes causing scans, locking; Query Store</td></tr>
+<tr><td>Slow only sometimes / for some values</td><td>parameter sniffing (topic 28); compare plans for fast vs slow parameters</td></tr>
+<tr><td>Loads and deletes crawl</td><td>row-by-row logic (21), huge single transactions (22), too many indexes (26), triggers (topic 29)</td></tr>
+<tr><td>Report over millions of rows</td><td>pre-aggregation (14, 29), columnstore index, partitioning</td></tr>
+</table>
+
+<div class="ex"><b>Try it</b>
+<p>Pick any three tips and demonstrate each on a larger table. Generate 1 million rows (recursive CTE or a cross join of system tables), then show <code>STATISTICS IO</code> before and after: tip 7 (sargable date filter), tip 12 (index on the foreign key) and tip 1 (covering index). Write the numbers down in your notes.</p></div>
+</main>
+<script src="../assets/course.js"></script>
+</body></html>

@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AI and SQL</title><link rel="stylesheet" href="../assets/style.css"></head>
+<body data-page="34-ai-and-sql"><main>
+<h1>AI and SQL</h1>
+<p class="lead">AI can draft, explain and review SQL quickly. It can also be confidently wrong. Use it as a fast junior colleague whose work you always verify.</p>
+<div class="goals"><b>After this topic you will</b> prompt an AI assistant for SQL with the right context, verify what it returns with a repeatable routine, recognise its typical mistakes, and know the safety rules for letting AI near real data.</div>
+
+<h2>Where AI helps most</h2>
+<table class="cmp">
+<tr><th>Task</th><th>Example prompt</th></tr>
+<tr><td><b>Draft a query</b></td><td>"Using these tables, write T-SQL for monthly revenue per category, last 6 months."</td></tr>
+<tr><td><b>Explain</b></td><td>"Explain this query step by step and say what each CTE returns."</td></tr>
+<tr><td><b>Debug</b></td><td>"This returns duplicate rows / error 8120. Here is the query, the schema and the message."</td></tr>
+<tr><td><b>Optimise</b></td><td>"Here is the query and its actual plan (XML). Suggest an index and a rewrite."</td></tr>
+<tr><td><b>Convert dialects</b></td><td>"Convert this Oracle SQL to T-SQL and list behaviour differences."</td></tr>
+<tr><td><b>Test data</b></td><td>"Generate 50 INSERTs for Customers with realistic Indian names and some NULLs."</td></tr>
+<tr><td><b>Review</b></td><td>"Review this stored procedure for NULL handling, injection and transaction problems."</td></tr>
+<tr><td><b>Learn</b></td><td>"Give me 5 practice questions on window functions with tables and answers hidden."</td></tr>
+</table>
+
+<h2>Give it the context it cannot guess</h2>
+<p>An AI does not know your database. It will invent plausible column names if you do not supply them. A good prompt has five parts:</p>
+<ol>
+<li><b>Dialect and version</b>: "SQL Server 2022 T-SQL".</li>
+<li><b>Schema</b>: paste the <code>CREATE TABLE</code> statements (with keys and types), or at least table and column names with relationships. Add a few sample rows.</li>
+<li><b>The business question</b> in plain words, including the grain: "one row per customer".</li>
+<li><b>Rules and edge cases</b>: "include customers without orders", "ignore cancelled orders", "NULL score counts as 0".</li>
+<li><b>Output format</b>: column names and order, "return only the query, then explain assumptions".</li>
+</ol>
+<pre class="sql">
+You are a senior SQL Server developer.
+Dialect: T-SQL (SQL Server 2022).
+Schema:
+  Customers(CustomerID PK, FirstName, LastName NULL, Country, Score NULL)
+  Orders(OrderID PK, CustomerID NULL (no FK), ProductID FK, OrderDate, OrderStatus, Quantity, Sales)
+Task: total Sales per customer over all orders, including customers with no orders (show 0).
+Output columns: CustomerID, FirstName, TotalSales. Sort by TotalSales descending.
+List any assumptions you made and any edge cases I should test.
+</pre>
+<div class="callout tip"><b>Ask it to ask you</b>Add "If anything is ambiguous, ask me before writing the query." This avoids confident guesses.</div>
+
+<h2>The verification loop (never skip)</h2>
+<div class="viz" data-id="loop"></div>
+<p>The example above: an AI draft quietly drops a customer. Watch how a row-count check catches it:</p>
+<div class="viz" data-id="bug"></div>
+
+<h2>Typical AI mistakes</h2>
+<table class="cmp">
+<tr><th>Mistake</th><th>What it looks like</th><th>Your defence</th></tr>
+<tr><td>Hallucinated names</td><td>columns or functions that do not exist, or exist in another dialect (<code>LIMIT</code>, <code>ILIKE</code>, <code>NVL</code>)</td><td>run it; give it the schema; state the dialect</td></tr>
+<tr><td>Wrong join type</td><td>INNER JOIN where you needed LEFT; customers or zero-rows silently vanish</td><td>compare row counts with the source table</td></tr>
+<tr><td>Fan-out</td><td>joins before aggregating, totals inflated</td><td>sanity check totals against a simple query</td></tr>
+<tr><td>NULL blind spots</td><td><code>NOT IN</code> with NULLs, <code>= NULL</code>, AVG ignoring NULL</td><td>test with NULL rows</td></tr>
+<tr><td>Filter in the wrong place</td><td>WHERE on the right table after a LEFT JOIN</td><td>read the query using topic 9's rule</td></tr>
+<tr><td>Off-by-one dates</td><td><code>BETWEEN</code> with datetime, wrong month boundaries</td><td>use half-open ranges, test month ends</td></tr>
+<tr><td>Non-sargable or slow</td><td>functions on indexed columns, SELECT *, scalar UDFs</td><td>check the plan (topics 30, 31)</td></tr>
+<tr><td>Destructive statements</td><td>UPDATE/DELETE without WHERE, or DROP "to start clean"</td><td>review every write; run in a transaction with ROLLBACK first</td></tr>
+<tr><td>Over-engineering</td><td>5 nested CTEs for a simple GROUP BY</td><td>ask for the simplest correct version</td></tr>
+</table>
+
+<h2>Use AI to teach you, not just to type</h2>
+<ul>
+<li><b>Write your own answer first</b>, then paste both and ask: "Compare my query with yours: correctness, edge cases, readability, performance."</li>
+<li>Ask for <b>"three different ways"</b> (join, subquery, window) and the trade-offs; run all and compare plans.</li>
+<li>Ask it to <b>break your query</b>: "Give me data that makes this query return a wrong answer."</li>
+<li>Ask for <b>explain-like-I-know-banking</b> analogies, but verify claims about engine internals.</li>
+</ul>
+
+<h2>AI in and around the database</h2>
+<table class="cmp">
+<tr><th>Capability</th><th>What it is</th></tr>
+<tr><td>Text-to-SQL assistants</td><td>chat or built-in copilots (SSMS, Azure Data Studio, VS Code extensions) that write queries from a question and your schema</td></tr>
+<tr><td>Vector search</td><td>newer SQL Server (2025) and Azure SQL support a <code>VECTOR</code> type and distance functions so you can store embeddings and search by meaning (semantic search, recommendations); PostgreSQL has <code>pgvector</code></td></tr>
+<tr><td>Calling models from SQL</td><td>some platforms can call an AI model from T-SQL to classify, summarise or embed text. Convenient, but a data-privacy and cost decision</td></tr>
+<tr><td>Query tuning helpers</td><td>automatic tuning, Query Store hints, index advisors: AI-like features inside the engine</td></tr>
+</table>
+<p>Check your SQL Server version's documentation before relying on any of these features.</p>
+
+<h2>Safety rules (important)</h2>
+<div class="callout warn"><b>Data and access</b><ul style="margin:4px 0">
+<li><b>Never paste real customer, account or employee data</b> into a public AI tool. Use schemas, fake samples, or masked data. Follow your bank's policy; many ban external AI tools outright.</li>
+<li>Prefer <b>schema-only</b> prompts: tables and column names are usually enough.</li>
+<li>If an application lets AI run SQL: use a <b>read-only login</b> limited to a safe schema or views, a <b>row limit and timeout</b>, <b>allow-list</b> statements (SELECT only, no semicolon chains), <b>log</b> every generated query, and show it to a person before running anything important.</li>
+<li><b>AI suggests, a person confirms.</b> It must not write money, attendance or customer records on its own.</li>
+</ul></div>
+
+<h2>A habit that scales</h2>
+<ol>
+<li>Understand the question and the grain yourself first.</li>
+<li>Let AI draft or review.</li>
+<li>Run on small data where you can predict the answer (our 10-row Orders table is perfect for this).</li>
+<li>Check row counts, totals, NULLs and edge cases.</li>
+<li>Check the plan on realistic volume.</li>
+<li>Commit it (with a comment on why) to your Git repository, as you will do with the 120 practice questions.</li>
+</ol>
+
+<div class="ex"><b>Try it</b>
+<p>1) Use the prompt template above with any AI assistant, then verify its answer against the correct result (Jossef 60, Kevin 65, Mary 100, Mark 85, Anna 0): work out the right numbers by hand first, then change the task to "Delivered orders only" and recompute (Jossef 60, Kevin 45, Mary 0, Mark 85, Anna 0). 2) Ask it to find a bug in a query you deliberately broke (change LEFT to INNER). 3) Ask it to write the same ranking query with RANK, DENSE_RANK and ROW_NUMBER and predict the differences before running.</p></div>
+</main>
+<script src="../assets/course.js"></script>
+<script>
+VIZ.loop = {
+  title: "Draft, verify, then trust",
+  steps: [
+    { note: "<b>1. Frame it.</b> You write down the question, the grain (one row per customer) and the edge cases (customers with no orders, NULLs)." },
+    { note: "<b>2. Prompt with context.</b> Dialect + schema + rules + wanted columns. The better the context, the fewer inventions." },
+    { note: "<b>3. Read the draft like a code review.</b> Join types? WHERE after LEFT JOIN? Aggregating before or after the join? Any column that is not in your schema?" },
+    { note: "<b>4. Run it on tiny data you know by heart</b> and predict the answer first. Compare row counts with the source tables." },
+    { note: "<b>5. Test edge cases:</b> a customer without orders, a NULL value, a tie, a month boundary." },
+    { note: "<b>6. Check the plan and speed</b> on realistic volume (topics 30 and 31). Only then save the query to your repository." }
+  ]
+};
+const cu = pick(D.customers, ["CustomerID","FirstName"]);
+VIZ.bug = {
+  title: "AI draft with an INNER JOIN: a row-count check catches the bug",
+  query: "-- AI draft\nSELECT c.CustomerID, c.FirstName, SUM(o.Sales) AS TotalSales\nFROM Customers c\nINNER JOIN Orders o ON o.CustomerID = c.CustomerID\nGROUP BY c.CustomerID, c.FirstName;",
+  tables: [cu], result: { title: "Result", cols: ["CustomerID","FirstName","TotalSales"] },
+  steps: [
+    { note: "Requirement: <b>every</b> customer, with 0 if there are no orders. Customers has 5 rows." },
+    { note: "The AI draft runs without error and looks plausible. It returns 4 rows.", mark: { customers: {0:"g",1:"g",2:"g",3:"g",4:"r"} },
+      result: [[1,"Jossef",60],[2,"Kevin",65],[3,"Mary",100],[4,"Mark",85]] },
+    { note: "<b>Check:</b> 5 customers in, 4 rows out. <b>Anna disappeared</b>: INNER JOIN drops customers without orders. The code is valid SQL, it just does not answer the question.", mark: { customers: {4:"y"} } },
+    { note: "<b>Fix:</b> <code>LEFT JOIN</code> and <code>ISNULL(SUM(o.Sales), 0)</code>. Now all 5 customers appear, Anna with 0.",
+      mark: { customers: {0:"g",1:"g",2:"g",3:"g",4:"g"} }, result: [[1,"Jossef",60],[2,"Kevin",65],[3,"Mary",100],[4,"Mark",85],[5,"Anna",0]] }
+  ]
+};
+</script>
+</body></html>

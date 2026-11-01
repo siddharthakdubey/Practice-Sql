@@ -1,0 +1,32 @@
+﻿CustomerID|FullName|CleanCity
+----------|--------|---------
+1|Aarav Verma|Mumbai
+2|Anita Singh|Chitrakoot
+3|Amit Gupta|Varanasi
+4|Asha Mishra|Mumbai
+5|Bhavna Yadav|Chitrakoot
+6|Chetan Patel|Varanasi
+7|Deepak Joshi|Mumbai
+8|Divya Tiwari|Chitrakoot
+9|Esha Pandey|Varanasi
+10|Farhan Sharma|Mumbai
+11|Gaurav Verma|Chitrakoot
+12|Hema Singh|Varanasi
+13|Ishaan Gupta|Mumbai
+14|Jyoti Mishra|Chitrakoot
+15|Karan Yadav|Varanasi
+16|Kavita Patel|Mumbai
+17|Lalit Joshi|Chitrakoot
+18|Meera Tiwari|Varanasi
+19|Nitin Pandey|Mumbai
+20|Neha Sharma|Chitrakoot
+21|Omkar Verma|Varanasi
+22|Pooja Singh|Mumbai
+23|Rahul Gupta|Chitrakoot
+24|Rekha Mishra|Varanasi
+25|Sanjay Yadav|Mumbai
+26|Seema Patel|Chitrakoot
+27|Tarun Joshi|Varanasi
+28|Usha Tiwari|Mumbai
+29|Vikram Pandey|Chitrakoot
+30|Yogita Sharma|Varanasi

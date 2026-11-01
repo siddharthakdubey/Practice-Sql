@@ -1,0 +1,8 @@
+﻿CustomerID|FirstName|LastName
+----------|---------|--------
+1|Aarav|Verma
+7|Deepak|Joshi
+27|Tarun|Joshi
+28|Usha|Tiwari
+29|Vikram|Pandey
+30|Yogita|Sharma

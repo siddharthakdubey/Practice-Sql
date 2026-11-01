@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CTAS and temp tables</title><link rel="stylesheet" href="../assets/style.css"></head>
+<body data-page="26-ctas-temp"><main>
+<h1>CTAS and temp tables</h1>
+<p class="lead">Save a query's result into a real table: permanent (CTAS) or temporary (#temp). Materialise once, reuse many times.</p>
+<div class="goals"><b>After this topic you will</b> create tables from a query (<code>SELECT INTO</code>), use local and global temp tables and table variables, index a temp table, and choose between them.</div>
+
+<h2>CTAS: Create Table As Select</h2>
+<p>Standard name <i>CTAS</i> (<code>CREATE TABLE x AS SELECT ...</code> in Oracle, PostgreSQL, MySQL, Snowflake). In SQL Server the same idea is written <code>SELECT ... INTO</code>:</p>
+<pre class="sql">
+SELECT OrderID, CustomerID, Sales
+INTO   dbo.DeliveredOrders_Snapshot          -- creates the table AND fills it
+FROM   Orders
+WHERE  OrderStatus = 'Delivered';
+
+SELECT * FROM dbo.DeliveredOrders_Snapshot;   -- 6 rows, a frozen copy
+</pre>
+<ul>
+<li>Column names and data types are copied from the query. NOT NULL carries over; <b>keys, indexes, defaults and constraints do not</b>: add them afterwards with ALTER TABLE.</li>
+<li>It is a <b>snapshot</b>: later changes to <code>Orders</code> do not appear (the opposite of a view).</li>
+<li>Fails if the table already exists. Use <code>DROP TABLE IF EXISTS</code> first.</li>
+<li>Fast: minimally logged, so it is the standard way to copy big data.</li>
+</ul>
+<pre class="sql">
+-- copy just the structure, no rows
+SELECT * INTO dbo.Orders_Archive FROM Orders WHERE 1 = 0;          -- condition never true
+
+-- load more rows later into the existing table
+INSERT INTO dbo.Orders_Archive SELECT * FROM Orders WHERE OrderDate &lt; '2025-02-01';
+
+-- quick backup before a risky change
+SELECT * INTO dbo.Customers_BAK_20261101 FROM Customers;
+</pre>
+<div class="callout key"><b>CTAS vs INSERT ... SELECT</b>CTAS creates the table too. INSERT...SELECT needs the table to exist (full control over types and constraints, and good for repeated loads).</div>
+
+<h2>Temporary tables</h2>
+<p>A table that lives in <code>tempdb</code> and disappears automatically. Name it with <code>#</code>.</p>
+<table class="cmp">
+<tr><th></th><th>Local temp <code>#t</code></th><th>Global temp <code>##t</code></th><th>Table variable <code>@t</code></th></tr>
+<tr><td>Visible to</td><td>your session only (and procedures it calls)</td><td>all sessions</td><td>the current batch/procedure only</td></tr>
+<tr><td>Dropped when</td><td>session ends (or procedure ends)</td><td>creator's session ends and no one uses it</td><td>batch ends</td></tr>
+<tr><td>Indexes / statistics</td><td>yes, and the optimizer has statistics</td><td>yes</td><td>limited; no statistics (fixed row estimate) unless recompiled</td></tr>
+<tr><td>Rolled back by ROLLBACK</td><td>yes</td><td>yes</td><td>no</td></tr>
+<tr><td>Best for</td><td>intermediate results with many rows (hundreds+)</td><td>rare: sharing between sessions</td><td>tiny lists, a few dozen rows</td></tr>
+</table>
+
+<pre class="sql">
+-- 1) fill it from a query
+SELECT CustomerID, SUM(Sales) AS Total
+INTO   #CustTotals
+FROM   Orders
+GROUP BY CustomerID;
+
+-- 2) reuse it as often as you like in this session
+SELECT * FROM #CustTotals WHERE Total &gt; 60;
+SELECT AVG(Total) FROM #CustTotals;
+UPDATE #CustTotals SET Total = 0 WHERE CustomerID = 6;           -- you can change it, unlike a CTE
+
+-- 3) tidy up (optional, it vanishes anyway)
+DROP TABLE IF EXISTS #CustTotals;
+</pre>
+<div class="viz" data-id="temp"></div>
+
+<h3>Define first, fill later (more control)</h3>
+<pre class="sql">
+CREATE TABLE #Stage (
+    OrderID INT PRIMARY KEY,
+    Sales   DECIMAL(10,2),
+    Flag    VARCHAR(10)
+);
+INSERT INTO #Stage (OrderID, Sales) SELECT OrderID, Sales FROM Orders WHERE Sales &gt; 30;
+UPDATE #Stage SET Flag = 'BIG' WHERE Sales &gt;= 50;
+CREATE INDEX ix_stage_flag ON #Stage (Flag);          -- a temp table can be indexed
+</pre>
+
+<h3>Table variable</h3>
+<pre class="sql">
+DECLARE @Top TABLE (CustomerID INT, Total DECIMAL(10,2));
+INSERT INTO @Top SELECT TOP 3 CustomerID, SUM(Sales) FROM Orders GROUP BY CustomerID ORDER BY SUM(Sales) DESC;
+SELECT * FROM @Top;
+</pre>
+
+<h2>Why use a temp table?</h2>
+<ol>
+<li><b>Break a monster query into steps</b> you can check one at a time, with real data to inspect.</li>
+<li><b>Compute once, use many times</b>: a CTE may be recalculated at every reference; a temp table is calculated once.</li>
+<li><b>Help the optimizer</b>: a temp table has statistics, so joins after it get better row estimates than after a complicated nested query.</li>
+<li><b>Stage data in ETL</b>: load raw rows, clean in place, then insert into the final table.</li>
+<li><b>Hold a working set</b> for a procedure (topic 28) while it loops or branches.</li>
+</ol>
+
+<h2>Cautions</h2>
+<ul>
+<li>Temp tables use <code>tempdb</code> (shared by everyone): huge ones can fill the disk or cause contention.</li>
+<li>A temp table with the same name in the same session fails on re-run: start scripts with <code>DROP TABLE IF EXISTS #t;</code>.</li>
+<li>SELECT INTO creates a table with the types the query happens to produce, e.g. <code>Total</code> may become <code>DECIMAL(38,2)</code>. Cast to what you want.</li>
+<li>Permanent CTAS tables become stale snapshots. Name them with a date or a purpose, and schedule clean-up.</li>
+</ul>
+
+<div class="ex"><b>Try it</b>
+<p>1) Create <code>#HighSpenders</code> (customers with total Sales &gt; 60), then join it back to Customers to print names. 2) Make a permanent <code>Orders_2025Q1</code> table with <code>SELECT INTO</code>, change an order in <code>Orders</code>, and compare the two. 3) Open a second query window and try to read your <code>#temp</code> table: what happens? (Invalid object name.) Then try with <code>##temp</code>. 4) Rebuild topic 22's four-layer query using two temp tables instead of CTEs.</p></div>
+</main>
+<script src="../assets/course.js"></script>
+<script>
+const o = pick(D.orders, ["OrderID","CustomerID","Sales"]);
+const rc = ["CustomerID","Total"];
+VIZ.temp = {
+  title: "Life of a #temp table",
+  query: "SELECT CustomerID, SUM(Sales) AS Total\nINTO #CustTotals FROM Orders GROUP BY CustomerID;",
+  tables: [o], result: { title: "#CustTotals (in tempdb)", cols: rc },
+  steps: [
+    { note: "<b>Session opens.</b> No #CustTotals exists yet." },
+    { note: "<b>SELECT ... INTO #CustTotals</b>: the query runs once on Orders, and its 5 grouped rows are <b>physically stored</b> in tempdb.",
+      mark: { orders: {0:"b",1:"p",2:"g",3:"y",4:"o",5:"b",6:"p",7:"g",8:"b",9:"o"} }, result: [[1,60],[2,65],[3,100],[4,85],[6,90]] },
+    { note: "<b>Reuse:</b> <code>SELECT ... WHERE Total &gt; 60</code> and <code>SELECT AVG(Total)</code> read the stored rows. Orders is <b>not</b> scanned again, and the grouping is not repeated." },
+    { note: "<b>Modify it:</b> <code>UPDATE #CustTotals SET Total = 0 WHERE CustomerID = 6</code>. It is a real table, so changes work (a CTE cannot be reused like this).", result: [[1,60],[2,65],[3,100],[4,85],[6,0]] },
+    { note: "<b>Session ends</b> (or you DROP it): the table is deleted automatically. Orders itself was never touched.", result: [] }
+  ]
+};
+</script>
+</body></html>

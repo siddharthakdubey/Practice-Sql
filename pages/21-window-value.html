@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Window value functions</title><link rel="stylesheet" href="../assets/style.css"></head>
+<body data-page="21-window-value"><main>
+<h1>Window value functions</h1>
+<p class="lead">LAG, LEAD, FIRST_VALUE and LAST_VALUE: read a value from another row of the same window, without a self-join.</p>
+<div class="goals"><b>After this topic you will</b> compare a row with the previous or next row (period-over-period change, gaps between events), fetch the first or last value of a group, and avoid the LAST_VALUE frame trap.</div>
+<div class="tbl" data-src="orders" data-cols="OrderID,CustomerID,OrderDate,Sales"></div>
+
+<h2>LAG and LEAD</h2>
+<pre class="sql">
+LAG (expression [, offset [, default]]) OVER ([PARTITION BY ...] ORDER BY ...)   -- value from an EARLIER row
+LEAD(expression [, offset [, default]]) OVER ([PARTITION BY ...] ORDER BY ...)   -- value from a LATER row
+</pre>
+<ul>
+<li><b>offset</b>: how many rows back/forward (default 1).</li>
+<li><b>default</b>: returned when there is no such row (default NULL). So <code>LAG(Sales, 1, 0)</code> gives 0 for the first row.</li>
+<li><b>ORDER BY is required</b>: "previous" only makes sense in a defined order.</li>
+</ul>
+<pre class="sql">
+SELECT OrderID, Sales,
+       LAG (Sales) OVER (ORDER BY OrderDate, OrderID) AS PrevSales,
+       LEAD(Sales) OVER (ORDER BY OrderDate, OrderID) AS NextSales,
+       Sales - LAG(Sales) OVER (ORDER BY OrderDate, OrderID) AS ChangeVsPrev
+FROM Orders;
+</pre>
+<div class="viz" data-id="lag"></div>
+
+<h2>Period-over-period analysis (month on month)</h2>
+<pre class="sql">
+WITH monthly AS (
+    SELECT DATETRUNC(MONTH, OrderDate) AS Mth, SUM(Sales) AS Total      -- or: EOMONTH(OrderDate) / YEAR+MONTH
+    FROM Orders GROUP BY DATETRUNC(MONTH, OrderDate)
+)
+SELECT Mth, Total,
+       LAG(Total) OVER (ORDER BY Mth)                                   AS PrevMonth,
+       Total - LAG(Total) OVER (ORDER BY Mth)                           AS Change,
+       ROUND(100.0 * (Total - LAG(Total) OVER (ORDER BY Mth))
+             / NULLIF(LAG(Total) OVER (ORDER BY Mth), 0), 2)            AS PctChange
+FROM monthly;
+</pre>
+<div class="tbl" data-title="Result">
+Mth | Total | PrevMonth | Change | PctChange
+2025-01-01 | 180 | NULL | NULL | NULL
+2025-02-01 | 105 | 180 | -75 | -41.67
+2025-03-01 | 115 | 105 | 10 | 9.52
+</div>
+<p>Notice the pattern: <b>aggregate first in a CTE, then window over the aggregated rows</b>. NULLIF avoids division by zero. (Year-over-year: <code>LAG(Total, 12)</code> over monthly rows with no missing months.)</p>
+
+<h2>Time between events (retention, customer behaviour)</h2>
+<pre class="sql">
+SELECT OrderID, CustomerID, OrderDate,
+       DATEDIFF(DAY,
+                LAG(OrderDate) OVER (PARTITION BY CustomerID ORDER BY OrderDate),
+                OrderDate) AS DaysSincePrevOrder
+FROM Orders WHERE CustomerID = 2;
+</pre>
+<div class="tbl" data-title="Result (customer 2)">
+OrderID | CustomerID | OrderDate | DaysSincePrevOrder
+1001 | 2 | 2025-01-01 | NULL
+1006 | 2 | 2025-02-05 | 35
+1009 | 2 | 2025-03-10 | 33
+</div>
+<p>PARTITION BY restarts per customer, so the first order of each customer has no previous (NULL). Average of this column = average repurchase gap. A bank analogue: days between a customer's transactions, or detecting two logins from different cities within minutes.</p>
+
+<h2>FIRST_VALUE and LAST_VALUE</h2>
+<pre class="sql">
+SELECT FirstName, Department, Salary,
+       FIRST_VALUE(FirstName) OVER (PARTITION BY Department ORDER BY Salary DESC) AS TopEarner,
+       FIRST_VALUE(Salary)    OVER (PARTITION BY Department ORDER BY Salary DESC) - Salary AS BehindTop
+FROM Employees;
+</pre>
+<div class="tbl" data-title="Result">
+FirstName | Department | Salary | TopEarner | BehindTop
+Kevin | Marketing | 65000 | Kevin | 0
+Frank | Marketing | 55000 | Kevin | 10000
+Michael | Sales | 90000 | Michael | 0
+Mary | Sales | 75000 | Michael | 15000
+Carol | Sales | 55000 | Michael | 35000
+</div>
+
+<h3>The LAST_VALUE trap</h3>
+<p>With an ORDER BY and no frame, the default frame ends at the <b>current row</b>, so "last value" is just the current row's own value:</p>
+<pre class="sql">
+SELECT OrderID, Sales,
+       LAST_VALUE(Sales) OVER (ORDER BY OrderDate)                               AS Wrong,
+       LAST_VALUE(Sales) OVER (ORDER BY OrderDate
+             ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)           AS Right
+FROM Orders WHERE CustomerID = 3;
+</pre>
+<div class="tbl" data-title="Result (customer 3: 60 then 40)">
+OrderID | Sales | Wrong | Right
+1002 | 60 | 60 | 40
+1007 | 40 | 40 | 40
+</div>
+<div class="callout warn"><b>Fix</b>Either extend the frame to <code>UNBOUNDED FOLLOWING</code> (above), or flip the ORDER BY and use FIRST_VALUE: <code>FIRST_VALUE(Sales) OVER (ORDER BY OrderDate DESC)</code>. The second is shorter and avoids the trap. (FIRST_VALUE's default frame starts at the beginning, so it works as expected.)</div>
+<p><b>NTH_VALUE</b> exists in PostgreSQL, Oracle and MySQL but <b>not in SQL Server</b>. Emulate "2nd highest" with <code>ROW_NUMBER()</code> / <code>DENSE_RANK()</code> (topic 20).</p>
+
+<h2>RESPECT / IGNORE NULLS</h2>
+<p>By default LAG/LEAD/FIRST_VALUE return NULL if the neighbour value is NULL. <code>IGNORE NULLS</code> skips them (carry the last known value forward). It is available in SQL Server 2022 and Oracle; on older SQL Server use a "latest non-null" workaround with <code>MAX(...) OVER (... ROWS UNBOUNDED PRECEDING)</code> on a group id.</p>
+
+<h2>Cheat sheet</h2>
+<table class="cmp">
+<tr><th>Want</th><th>Use</th></tr>
+<tr><td>Previous row's value</td><td><code>LAG(x) OVER (ORDER BY t)</code></td></tr>
+<tr><td>Next row's value</td><td><code>LEAD(x) OVER (ORDER BY t)</code></td></tr>
+<tr><td>Change vs previous</td><td><code>x - LAG(x) OVER (...)</code></td></tr>
+<tr><td>Value of the first / best row in the group</td><td><code>FIRST_VALUE(x) OVER (PARTITION BY g ORDER BY ...)</code></td></tr>
+<tr><td>Last row's value</td><td><code>LAST_VALUE</code> with full frame, or flip order + FIRST_VALUE</td></tr>
+<tr><td>Gap between events</td><td><code>DATEDIFF(unit, LAG(date) OVER (...), date)</code></td></tr>
+</table>
+
+<div class="ex"><b>Try it</b>
+<p>1) For each order, show the sale of the same customer's <em>next</em> order. 2) Flag orders whose Sales is higher than the previous order ('Up' / 'Down' / 'First' with CASE). 3) For each department, who earns the lowest salary (use <code>FIRST_VALUE</code> with ASC order)? 4) Month-over-month % change per Category (join Products, partition by Category).</p></div>
+</main>
+<script src="../assets/course.js"></script>
+<script>
+const o = pick(D.orders, ["OrderID","Sales"]);
+VIZ.lag = {
+  title: "LAG looks one row up, LEAD looks one row down",
+  tables: [o], result: { title: "Result", cols: ["OrderID","Sales","PrevSales","NextSales","ChangeVsPrev"] },
+  steps: [
+    { note: "Rows are lined up in <code>OrderDate</code> order. For every row we peek at the neighbours: <b>blue = previous (LAG)</b>, <b>purple = next (LEAD)</b>, yellow = current." },
+    ...o.rows.map((r, i) => {
+      const p = i > 0 ? o.rows[i - 1] : null, n = i < o.rows.length - 1 ? o.rows[i + 1] : null, mk = {};
+      if (p) mk[i - 1] = "b"; if (n) mk[i + 1] = "p"; mk[i] = "y";
+      return { note: "Order <b>" + r[0] + "</b>: LAG = " + (p ? "<b>" + p[1] + "</b> (order " + p[0] + ")" : "<b>NULL</b> (no row above)") +
+        ", LEAD = " + (n ? "<b>" + n[1] + "</b> (order " + n[0] + ")" : "<b>NULL</b> (no row below)") +
+        ". Change = " + (p ? r[1] + " - " + p[1] + " = <b>" + (r[1] - p[1]) + "</b>" : "<b>NULL</b>") + ".",
+        mark: { orders: mk }, add: [[r[0], r[1], p ? p[1] : null, n ? n[1] : null, p ? r[1] - p[1] : null]] };
+    })
+  ]
+};
+</script>
+</body></html>

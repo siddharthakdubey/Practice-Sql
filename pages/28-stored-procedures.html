@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Stored procedures</title><link rel="stylesheet" href="../assets/style.css"></head>
+<body data-page="28-stored-procedures"><main>
+<h1>Stored procedures</h1>
+<p class="lead">Save a block of SQL on the server with a name and parameters, then call it like a function: logic, transactions and error handling in one place.</p>
+<div class="goals"><b>After this topic you will</b> create procedures with input/output parameters, use variables, IF, WHILE, TRY/CATCH and transactions inside them, call them with EXEC, avoid SQL injection in dynamic SQL, and know procedures vs functions vs views.</div>
+
+<h2>Why a stored procedure?</h2>
+<ul>
+<li><b>Reuse</b>: write once, call from SSMS, an application, a scheduled job.</li>
+<li><b>Parameters</b>: a view cannot take them.</li>
+<li><b>Several statements and logic</b>: IF/ELSE, loops, transactions, error handling.</li>
+<li><b>Security</b>: grant <code>EXECUTE</code> on the procedure without giving table access. The app can only do what the procedure allows.</li>
+<li><b>Performance</b>: the plan is compiled and cached, and fewer round trips to the server.</li>
+<li><b>One place to change</b> a business rule.</li>
+</ul>
+
+<h2>Create and run</h2>
+<pre class="sql">
+CREATE OR ALTER PROCEDURE dbo.usp_GetCustomerOrders
+    @CustomerID INT                          -- input parameter
+AS
+BEGIN
+    SET NOCOUNT ON;                          -- don't send "n rows affected" messages (less chatter, faster)
+
+    SELECT OrderID, OrderDate, OrderStatus, Sales
+    FROM   Orders
+    WHERE  CustomerID = @CustomerID
+    ORDER BY OrderDate;
+END;
+GO
+
+EXEC dbo.usp_GetCustomerOrders @CustomerID = 2;          -- call it (name the parameter: clearer)
+EXEC dbo.usp_GetCustomerOrders 2;                         -- positional also works
+</pre>
+<div class="tbl" data-title="Result of EXEC ... @CustomerID = 2">
+OrderID | OrderDate | OrderStatus | Sales
+1001 | 2025-01-01 | Delivered | 20
+1006 | 2025-02-05 | Delivered | 25
+1009 | 2025-03-10 | Shipped | 20
+</div>
+<p><code>usp_</code> is a common prefix ("user stored procedure"). Do not use <code>sp_</code>: SQL Server looks for those in the <code>master</code> database first.</p>
+
+<h2>Parameters: defaults and OUTPUT</h2>
+<pre class="sql">
+CREATE OR ALTER PROCEDURE dbo.usp_CustomerSummary
+    @Country    VARCHAR(50),
+    @MinTotal   DECIMAL(10,2) = 0,               -- optional: default value
+    @CustomerCount INT OUTPUT                    -- sends a value back to the caller
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT c.FirstName, SUM(o.Sales) AS Total
+    FROM   Customers c
+    JOIN   Orders o ON o.CustomerID = c.CustomerID
+    WHERE  c.Country = @Country
+    GROUP BY c.FirstName
+    HAVING SUM(o.Sales) &gt;= @MinTotal;
+
+    SET @CustomerCount = @@ROWCOUNT;            -- rows returned by the SELECT above
+END;
+GO
+
+DECLARE @n INT;
+EXEC dbo.usp_CustomerSummary @Country = 'USA', @MinTotal = 60, @CustomerCount = @n OUTPUT;
+SELECT @n AS HowMany;                            -- 2
+</pre>
+<div class="viz" data-id="proc"></div>
+
+<h2>Variables and control flow</h2>
+<pre class="sql">
+DECLARE @i INT = 1, @msg VARCHAR(100);           -- variables start with @
+SET @msg = 'Hello';                              -- SET or SELECT assigns
+SELECT @msg = FirstName FROM Customers WHERE CustomerID = 2;    -- from a query (Kevin)
+
+IF @i = 1
+    PRINT 'one';
+ELSE IF @i = 2
+    PRINT 'two';
+ELSE
+BEGIN                                            -- BEGIN...END groups several statements
+    PRINT 'something else';
+    PRINT 'still in the ELSE';
+END;
+
+WHILE @i &lt;= 3
+BEGIN
+    PRINT 'loop ' + CAST(@i AS VARCHAR(3));
+    SET @i += 1;
+END;
+</pre>
+<div class="callout tip"><b>Set-based first</b>SQL is built to handle many rows in a single statement. A WHILE loop that updates one row at a time is often 100x slower than one UPDATE. Use loops for control flow (batches of work, iterating over a few items), not row-by-row data processing.</div>
+
+<h2>Transactions and error handling</h2>
+<pre class="sql">
+CREATE TABLE Accounts (AccountID INT PRIMARY KEY, Owner VARCHAR(50), Balance DECIMAL(12,2) CHECK (Balance &gt;= 0));
+INSERT INTO Accounts VALUES (1, 'Asha', 1000), (2, 'Ravi', 200);
+GO
+CREATE OR ALTER PROCEDURE dbo.usp_Transfer
+    @FromAcc INT, @ToAcc INT, @Amount DECIMAL(12,2)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;                           -- any runtime error rolls back the whole transaction
+
+    BEGIN TRY
+        IF @Amount &lt;= 0 THROW 50001, 'Amount must be positive.', 1;
+
+        BEGIN TRAN;
+            UPDATE Accounts SET Balance = Balance - @Amount WHERE AccountID = @FromAcc;   -- CHECK stops overdraft
+            UPDATE Accounts SET Balance = Balance + @Amount WHERE AccountID = @ToAcc;
+        COMMIT;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT &gt; 0 ROLLBACK;             -- undo the debit if the credit failed
+        THROW;                                   -- re-raise the original error to the caller
+    END CATCH
+END;
+GO
+EXEC dbo.usp_Transfer 1, 2, 300;      -- ok:  Asha 700, Ravi 500
+EXEC dbo.usp_Transfer 2, 1, 9999;     -- fails (CHECK violated), nothing changes
+</pre>
+<ul>
+<li><b>TRY/CATCH</b>: errors in TRY jump to CATCH. Inside CATCH use <code>ERROR_MESSAGE()</code>, <code>ERROR_NUMBER()</code>, <code>ERROR_LINE()</code>.</li>
+<li><b>THROW</b> raises an error (or re-raises it inside CATCH).</li>
+<li>Always <code>ROLLBACK</code> if <code>@@TRANCOUNT &gt; 0</code> in CATCH.</li>
+<li>This is the classic ACID demonstration: both updates or neither (topic 6).</li>
+</ul>
+
+<h2>Return values</h2>
+<table class="cmp">
+<tr><th>Mechanism</th><th>For</th></tr>
+<tr><td>A <code>SELECT</code> inside the procedure</td><td>returns a result set to the caller</td></tr>
+<tr><td><code>OUTPUT</code> parameters</td><td>single values (counts, new IDs: <code>SET @NewID = SCOPE_IDENTITY()</code>)</td></tr>
+<tr><td><code>RETURN n</code></td><td>an integer status code (0 = success by convention), not data</td></tr>
+<tr><td><code>INSERT INTO #t EXEC proc</code></td><td>capture a procedure's result set into a table</td></tr>
+</table>
+
+<h2>Dynamic SQL and injection</h2>
+<pre class="sql">
+-- DANGEROUS: text concatenation
+DECLARE @sql NVARCHAR(MAX) = N'SELECT * FROM Customers WHERE Country = ''' + @Country + '''';   -- @Country = ''' OR 1=1 --
+EXEC(@sql);
+
+-- SAFE: parameters with sp_executesql
+EXEC sp_executesql
+     N'SELECT * FROM Customers WHERE Country = @c',
+     N'@c VARCHAR(50)',
+     @c = @Country;
+</pre>
+<div class="callout warn"><b>SQL injection</b>Never build SQL by pasting user input into a string. Values must travel as <b>parameters</b>. Identifiers (table/column names) cannot be parameters: validate them against a whitelist or use <code>QUOTENAME()</code>.</div>
+
+<h2>Procedure vs function vs view</h2>
+<table class="cmp">
+<tr><th></th><th>Stored procedure</th><th>Function</th><th>View</th></tr>
+<tr><td>Parameters</td><td>yes (in/out)</td><td>yes (input)</td><td>no</td></tr>
+<tr><td>Can change data</td><td><b>yes</b></td><td>no (side-effect free)</td><td>mostly no</td></tr>
+<tr><td>Used inside a SELECT</td><td>no (EXEC only)</td><td><b>yes</b> (scalar in column, table-valued in FROM)</td><td><b>yes</b></td></tr>
+<tr><td>Transactions / TRY-CATCH</td><td>yes</td><td>no</td><td>no</td></tr>
+</table>
+<pre class="sql">
+-- an inline table-valued function = a parameterised view (fast and optimizable)
+CREATE OR ALTER FUNCTION dbo.fn_OrdersOf (@CustomerID INT) RETURNS TABLE AS
+RETURN SELECT OrderID, Sales FROM Orders WHERE CustomerID = @CustomerID;
+GO
+SELECT * FROM dbo.fn_OrdersOf(2);
+</pre>
+
+<h2>Good practice</h2>
+<ul>
+<li><code>SET NOCOUNT ON</code>; schema-qualify names (<code>dbo.Orders</code>); name parameters clearly; comment the header (purpose, author, date, change log).</li>
+<li>Validate parameters; return meaningful errors with THROW.</li>
+<li>Keep procedures focused (one job). Avoid <code>SELECT *</code>.</li>
+<li>Watch <b>parameter sniffing</b>: the plan is built for the first parameter values and reused; a plan good for a rare value can be bad for a common one. Fixes: <code>OPTION (RECOMPILE)</code>, <code>OPTIMIZE FOR</code>, better indexes (topics 30, 31).</li>
+<li>Keep procedures in source control (like your Git repo) and deploy with scripts: <code>CREATE OR ALTER</code> makes that idempotent.</li>
+</ul>
+
+<h2>Manage them</h2>
+<pre class="sql">
+EXEC sp_helptext 'dbo.usp_Transfer';          -- view source
+DROP PROCEDURE IF EXISTS dbo.usp_Transfer;
+GRANT EXECUTE ON dbo.usp_Transfer TO app_role;
+</pre>
+
+<div class="ex"><b>Try it</b>
+<p>1) Write <code>usp_AddOrder</code> with parameters for customer, product, quantity; it looks up the price, computes Sales, inserts the order with the next OrderID and returns it via OUTPUT. 2) Make it throw an error if the customer does not exist. 3) Call the transfer procedure with an overdraft and confirm both balances are unchanged. 4) Rewrite a row-by-row WHILE loop as one UPDATE.</p></div>
+</main>
+<script src="../assets/course.js"></script>
+<script>
+const c = pick(D.customers, ["CustomerID","FirstName","Country"]);
+VIZ.proc = {
+  title: "EXEC usp_CustomerSummary @Country='USA', @MinTotal=60, @CustomerCount=@n OUTPUT",
+  tables: [c], result: { title: "Returned result set", cols: ["FirstName","Total"] },
+  steps: [
+    { note: "<b>1. Call:</b> the caller passes <code>@Country = 'USA'</code> and <code>@MinTotal = 60</code>. <code>@CustomerCount</code> is an OUTPUT slot waiting for a value." },
+    { note: "<b>2. WHERE c.Country = @Country:</b> the parameter filters the customers. Kevin, Mary and Anna are USA (green); Jossef and Mark are not.", mark: { customers: {0:"r",1:"g",2:"g",3:"r",4:"g"} } },
+    { note: "<b>3. Join and GROUP BY:</b> Kevin's orders 20 + 25 + 20 = 65. Mary's 60 + 40 = 100. Anna has no orders, so the inner join drops her.", mark: { customers: {0:"r",1:"g",2:"g",3:"r",4:"r"} } },
+    { note: "<b>4. HAVING SUM(Sales) &gt;= @MinTotal (60):</b> both 65 and 100 pass. The result set is sent to the caller.", mark: { customers: {1:"g",2:"g"} }, result: [["Kevin",65],["Mary",100]] },
+    { note: "<b>5. SET @CustomerCount = @@ROWCOUNT:</b> 2 rows came back, so <b>2</b> is written into the OUTPUT parameter, and the caller's <code>@n</code> now holds 2." }
+  ]
+};
+</script>
+</body></html>

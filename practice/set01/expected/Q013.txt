@@ -1,0 +1,5 @@
+﻿Category|Revenue
+--------|-------
+Electronics|316571.7000
+Home|227390.5000
+Fashion|206621.0500

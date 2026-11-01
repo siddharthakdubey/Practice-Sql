@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CASE statement</title><link rel="stylesheet" href="../assets/style.css"></head>
+<body data-page="16-case"><main>
+<h1>CASE statement</h1>
+<p class="lead">If / else logic inside a query: categorise rows, map codes to labels, and aggregate conditionally.</p>
+<div class="goals"><b>After this topic you will</b> write searched and simple CASE, use it in SELECT, ORDER BY, GROUP BY, UPDATE and inside aggregates (conditional aggregation / manual pivot), and know its evaluation rules.</div>
+<div class="tbl" data-src="orders" data-cols="OrderID,OrderStatus,Quantity,Sales"></div>
+
+<h2>Searched CASE: conditions, first true wins</h2>
+<pre class="sql">
+SELECT OrderID, Sales,
+       CASE
+           WHEN Sales &gt;= 50 THEN 'High'
+           WHEN Sales &gt;= 30 THEN 'Medium'
+           ELSE                  'Low'
+       END AS Category
+FROM Orders;
+</pre>
+<ul>
+<li>Conditions are tested <b>top to bottom</b>. The <b>first</b> true one returns its value and the rest are skipped. That is why the order matters: 60 is &gt;= 50 <em>and</em> &gt;= 30, but gets 'High'.</li>
+<li><code>ELSE</code> is the default. <b>If you omit ELSE and nothing matches, the result is NULL.</b></li>
+<li><code>END</code> closes it. Give the result an alias.</li>
+</ul>
+<div class="viz" data-id="case"></div>
+
+<h2>Simple CASE: compare one value to many</h2>
+<pre class="sql">
+SELECT OrderID,
+       CASE OrderStatus
+           WHEN 'Delivered'  THEN 'Done'
+           WHEN 'Shipped'    THEN 'On the way'
+           WHEN 'Processing' THEN 'Being packed'
+           ELSE 'Unknown'
+       END AS Friendly
+FROM Orders;
+</pre>
+<p>Shorthand for <code>CASE WHEN OrderStatus = 'Delivered' ...</code>. It can only test <b>equality</b>. For ranges, <code>IS NULL</code> or anything else, use the searched form. (Careful: a simple CASE cannot match NULL because it uses <code>=</code>.)</p>
+
+<h2>Rules to remember</h2>
+<ol>
+<li>All THEN/ELSE results must be of <b>compatible types</b>: you cannot return text in one branch and a number in another (<code>THEN 'High' ... ELSE 0</code> errors; use <code>'0'</code> or CAST).</li>
+<li>CASE is an <b>expression</b>, not a statement: it returns a value, usable anywhere an expression can go.</li>
+<li>Use <code>IS NULL</code> inside: <code>WHEN ShipDate IS NULL THEN 'Not shipped'</code>.</li>
+<li>Shorter two-way version: <code>IIF(Sales &gt;= 50, 'High', 'Low')</code> (T-SQL).</li>
+</ol>
+
+<h2>Where CASE can go</h2>
+<h3>In GROUP BY: group by the category</h3>
+<pre class="sql">
+SELECT CASE WHEN Sales &gt;= 50 THEN 'High' WHEN Sales &gt;= 30 THEN 'Medium' ELSE 'Low' END AS Category,
+       COUNT(*) AS Orders, SUM(Sales) AS Total
+FROM Orders
+GROUP BY CASE WHEN Sales &gt;= 50 THEN 'High' WHEN Sales &gt;= 30 THEN 'Medium' ELSE 'Low' END;
+</pre>
+<div class="tbl" data-title="Result">
+Category | Orders | Total
+High | 3 | 200
+Medium | 3 | 125
+Low | 4 | 75
+</div>
+<p>You must repeat the CASE in GROUP BY (the alias does not exist yet at that stage; topic 4). Cleaner: put the CASE in a subquery or CTE first, then group by the alias (topic 24).</p>
+
+<h3>In ORDER BY: custom sort order</h3>
+<pre class="sql">
+SELECT OrderID, OrderStatus FROM Orders
+ORDER BY CASE OrderStatus WHEN 'Processing' THEN 1 WHEN 'Shipped' THEN 2 ELSE 3 END;   -- unfinished work first
+</pre>
+
+<h3>In UPDATE: change by rule</h3>
+<pre class="sql">
+UPDATE Employees
+SET Salary = CASE WHEN Department = 'Sales' THEN Salary * 1.10
+                  WHEN Department = 'Marketing' THEN Salary * 1.05
+                  ELSE Salary END;           -- ELSE Salary = leave as is (otherwise NULL!)
+</pre>
+
+<h3>Inside aggregates: conditional aggregation (the pivot trick)</h3>
+<pre class="sql">
+SELECT SUM(CASE WHEN OrderStatus = 'Delivered'  THEN Sales ELSE 0 END) AS DeliveredSales,
+       SUM(CASE WHEN OrderStatus = 'Shipped'    THEN Sales ELSE 0 END) AS ShippedSales,
+       SUM(CASE WHEN OrderStatus = 'Processing' THEN Sales ELSE 0 END) AS ProcessingSales,
+       COUNT(CASE WHEN ShipDate IS NULL THEN 1 END)                    AS NotShipped   -- COUNT ignores the NULLs
+FROM Orders;
+</pre>
+<div class="tbl" data-title="Result: rows turned into columns">
+DeliveredSales | ShippedSales | ProcessingSales | NotShipped
+190 | 170 | 40 | 1
+</div>
+<p>One pass over the table gives several totals side by side, instead of GROUP BY's several rows. It is the portable way to build cross-tabs (T-SQL also has <code>PIVOT</code>). Another classic: a "flag" total, e.g. <code>SUM(CASE WHEN Score &gt; 500 THEN 1 ELSE 0 END)</code> = how many customers score above 500.</p>
+
+<h3>Fixing data: replace bad codes</h3>
+<pre class="sql">
+SELECT FirstName,
+       CASE WHEN Score IS NULL THEN 'Unrated'
+            WHEN Score &gt;= 700    THEN 'Gold'
+            WHEN Score &gt;= 400    THEN 'Silver'
+            ELSE 'Bronze' END AS Tier
+FROM Customers;
+</pre>
+<div class="tbl" data-title="Result">
+FirstName | Tier
+Jossef | Bronze
+Kevin | Gold
+Mary | Gold
+Mark | Silver
+Anna | Unrated
+</div>
+<div class="callout warn"><b>Order your NULL check first</b>If you test <code>Score &gt;= 700</code> before <code>IS NULL</code> nothing breaks here (NULL fails the test), but a final <code>ELSE 'Bronze'</code> would then label Anna "Bronze". Always decide where NULL goes.</div>
+
+<div class="ex"><b>Try it</b>
+<p>1) Label each order 'Fast' (shipped within 5 days), 'Slow', or 'Open' (not shipped). 2) For each Country, count customers with Score &gt; 500 and customers with Score &lt;= 500 in two columns. 3) Sort employees so that Sales is first, then Marketing, then by salary descending. 4) Predict then check: what does <code>CASE WHEN 1=2 THEN 'x' END</code> return?</p></div>
+</main>
+<script src="../assets/course.js"></script>
+<script>
+const o = pick(D.orders, ["OrderID","Sales"]);
+const cat = s => s >= 50 ? "High" : s >= 30 ? "Medium" : "Low";
+VIZ.case = {
+  title: "CASE tested row by row, top to bottom",
+  query: "CASE WHEN Sales >= 50 THEN 'High'\n     WHEN Sales >= 30 THEN 'Medium'\n     ELSE 'Low' END",
+  tables: [o], result: { title: "Result", cols: ["OrderID","Sales","Category"] },
+  steps: [
+    { note: "Each row is evaluated alone. The engine tries WHEN 1, then WHEN 2, then ELSE." },
+    ...o.rows.map((r, i) => {
+      const s = r[1], c = cat(s);
+      const path = s >= 50 ? "<code>" + s + " &gt;= 50</code> is true, so stop: <b>High</b>." :
+        s >= 30 ? "<code>" + s + " &gt;= 50</code> false &rarr; <code>" + s + " &gt;= 30</code> true: <b>Medium</b>." :
+        "<code>" + s + " &gt;= 50</code> false &rarr; <code>" + s + " &gt;= 30</code> false &rarr; ELSE: <b>Low</b>.";
+      return { note: "Order " + r[0] + ": " + path, mark: { orders: { [i]: c === "High" ? "g" : c === "Medium" ? "y" : "b" } }, add: [[r[0], s, c]] };
+    })
+  ]
+};
+</script>
+</body></html>

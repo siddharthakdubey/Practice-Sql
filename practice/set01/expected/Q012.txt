@@ -1,0 +1,5 @@
+﻿Channel|AvgDaysToShip
+-------|-------------
+App|5.92
+Online|5.08
+Store|4.20

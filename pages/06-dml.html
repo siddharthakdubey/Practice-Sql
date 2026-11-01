@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DML commands</title><link rel="stylesheet" href="../assets/style.css"></head>
+<body data-page="06-dml"><main>
+<h1>DML commands</h1>
+<p class="lead">Data Manipulation Language: INSERT, UPDATE, DELETE and MERGE change the <em>rows</em> inside a table.</p>
+<div class="goals"><b>After this topic you will</b> add, change and remove rows safely, use <code>INSERT ... SELECT</code>, <code>OUTPUT</code>, <code>MERGE</code>, and wrap risky changes in a transaction you can roll back.</div>
+
+<div class="callout warn"><b>Practice rule</b>Re-run <code>sql/00_setup.sql</code> any time to restore the original data. In real systems there is no such button, so learn the safe habits below now.</div>
+
+<h2>INSERT: add rows</h2>
+<pre class="sql">
+-- 1. name the columns (always do this), give values in the same order
+INSERT INTO Customers (CustomerID, FirstName, LastName, Country, Score)
+VALUES (6, 'Priya', 'Nair', 'India', 620);
+
+-- 2. several rows in one statement (fast: one round trip)
+INSERT INTO Customers (CustomerID, FirstName, Country)
+VALUES (7, 'Omar', 'UAE'),
+       (8, 'Lena', 'Germany');          -- LastName and Score become NULL
+
+-- 3. rows that come from another query
+INSERT INTO Customers (CustomerID, FirstName, LastName, Country, Score)
+SELECT EmployeeID + 100, FirstName, LastName, 'Staff', 0
+FROM Employees;
+</pre>
+<ul>
+<li>Columns you leave out get their DEFAULT, or NULL if allowed, or an error if they are NOT NULL with no default.</li>
+<li>Without the column list (<code>INSERT INTO Customers VALUES (...)</code>) the order must match the table exactly. Fragile: avoid.</li>
+<li>Types must be convertible; text goes in quotes, numbers do not.</li>
+<li>With an IDENTITY column leave it out; SQL Server numbers it.</li>
+</ul>
+
+<h2>UPDATE: change existing rows</h2>
+<pre class="sql">
+UPDATE Customers
+SET    Score = 0
+WHERE  Score IS NULL;                         -- only these rows
+
+UPDATE Customers
+SET    Score = Score + 50, Country = 'US'     -- many columns, expressions allowed
+WHERE  CustomerID = 3;
+</pre>
+<div class="viz" data-id="update"></div>
+<div class="callout warn"><b>The classic disaster: UPDATE without WHERE</b>changes <em>every</em> row. Habit: write the <code>SELECT</code> with the same WHERE first, check the rows, then turn it into an UPDATE. Also check <code>@@ROWCOUNT</code> afterwards.</div>
+
+<h3>UPDATE using another table (join)</h3>
+<pre class="sql">
+UPDATE o
+SET    o.Sales = o.Quantity * p.Price         -- recalculate Sales from the price list
+FROM   Orders AS o
+JOIN   Products AS p ON p.ProductID = o.ProductID
+WHERE  o.OrderStatus = 'Processing';
+</pre>
+<p>The alias <code>o</code> after <code>UPDATE</code> says which table is changed; the FROM/JOIN supplies the values. (Join details: topic 8.)</p>
+
+<h2>DELETE: remove rows</h2>
+<pre class="sql">
+DELETE FROM Customers WHERE CustomerID &gt; 5;           -- the extra rows we added
+DELETE FROM Orders  WHERE OrderStatus = 'Processing';
+</pre>
+<ul>
+<li>Again, no WHERE means every row goes. <code>TRUNCATE TABLE</code> does the same, faster (topic 5).</li>
+<li>A parent row that is still referenced by a foreign key cannot be deleted: the DB protects you.</li>
+<li>Many systems use <b>soft delete</b> (<code>IsDeleted = 1</code> or a status) so history survives.</li>
+</ul>
+
+<h2>OUTPUT: see what changed</h2>
+<pre class="sql">
+UPDATE Customers
+SET    Score = Score + 10
+OUTPUT deleted.CustomerID, deleted.Score AS OldScore, inserted.Score AS NewScore
+WHERE  Country = 'Germany';
+</pre>
+<div class="tbl" data-title="Output (rows changed)">
+CustomerID | OldScore | NewScore
+1 | 350 | 360
+4 | 500 | 510
+</div>
+<p><code>deleted</code> and <code>inserted</code> are virtual tables holding the old and new row images. Great for audit trails and for checking your own change.</p>
+
+<h2>MERGE: upsert (insert or update)</h2>
+<pre class="sql">
+MERGE Customers AS target
+USING (VALUES (2, 'Kevin', 'Brown', 'USA', 950),
+              (9, 'Neha',  'Rao',   'India', 400))
+      AS source (CustomerID, FirstName, LastName, Country, Score)
+   ON target.CustomerID = source.CustomerID
+WHEN MATCHED THEN
+     UPDATE SET target.Score = source.Score
+WHEN NOT MATCHED BY TARGET THEN
+     INSERT (CustomerID, FirstName, LastName, Country, Score)
+     VALUES (source.CustomerID, source.FirstName, source.LastName, source.Country, source.Score);
+</pre>
+<p>Kevin (2) exists, so his score is updated; Neha (9) does not, so she is inserted. One statement, one pass. (MERGE has some known edge-case bugs in SQL Server; many teams prefer an explicit UPDATE followed by INSERT in a transaction.)</p>
+
+<h2>Transactions: all or nothing</h2>
+<pre class="sql">
+BEGIN TRANSACTION;
+
+UPDATE Accounts SET Balance = Balance - 500 WHERE AccountID = 1;   -- debit
+UPDATE Accounts SET Balance = Balance + 500 WHERE AccountID = 2;   -- credit
+
+-- looks right?
+COMMIT;        -- make permanent
+-- ROLLBACK;   -- or undo everything since BEGIN
+</pre>
+<p>A transaction follows the <b>ACID</b> rules:</p>
+<table class="cmp"><tr><th>A</th><th>C</th><th>I</th><th>D</th></tr>
+<tr><td><b>Atomic</b>: all steps happen or none</td><td><b>Consistent</b>: constraints hold before and after</td><td><b>Isolated</b>: concurrent users do not see half-done work</td><td><b>Durable</b>: after COMMIT it survives a crash</td></tr></table>
+<p>As a bank engineer this is your home turf: a transfer must never debit without crediting. While a transaction is open it holds <em>locks</em>, so keep it short and never leave one open while you go for lunch.</p>
+<p>Safe-change pattern for production-like data:</p>
+<pre class="sql">
+BEGIN TRAN;
+    UPDATE Customers SET Score = 0 WHERE Country = 'USA';
+    SELECT @@ROWCOUNT AS RowsChanged;      -- expected 3?
+    SELECT * FROM Customers;               -- eyeball it
+ROLLBACK;                                   -- change to COMMIT only when happy
+</pre>
+
+<div class="ex"><b>Try it</b>
+<p>1) Insert yourself as customer 10. 2) Raise the Score of all USA customers by 10% (careful with NULL). 3) Wrap a DELETE of all Orders in a transaction, check the count with <code>SELECT COUNT(*) FROM Orders</code>, then ROLLBACK and check again. 4) Write a MERGE that updates a product price or inserts the product.</p></div>
+</main>
+<script src="../assets/course.js"></script>
+<script>
+const c = pick(D.customers, ["CustomerID","FirstName","Country","Score"]);
+const after = [[1,"Jossef","Germany",350],[2,"Kevin","USA",900],[3,"Mary","USA",750],[4,"Mark","Germany",500],[5,"Anna","USA",0]];
+VIZ.update = {
+  title: "UPDATE touches only the rows that match WHERE",
+  query: "UPDATE Customers\nSET    Score = 0\nWHERE  Score IS NULL;",
+  tables: [c],
+  result: { title: "Customers after the UPDATE", cols: ["CustomerID","FirstName","Country","Score"] },
+  steps: [
+    { note: "Before: the table has 5 rows. Anna's Score is NULL." },
+    { note: "The engine tests <code>WHERE Score IS NULL</code> on each row. Only Anna matches.", mark: { customers: {0:"r",1:"r",2:"r",3:"r",4:"y"} } },
+    { note: "Matching row is changed in place (SET Score = 0). All other rows are untouched. <code>@@ROWCOUNT</code> = 1.",
+      mark: { customers: {4:"g"} }, result: after },
+    { note: "Without the WHERE clause every row would have matched and every score would have become 0." }
+  ]
+};
+</script>
+</body></html>

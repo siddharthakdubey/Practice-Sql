@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Filtering data</title><link rel="stylesheet" href="../assets/style.css"></head>
+<body data-page="07-filtering"><main>
+<h1>Filtering data</h1>
+<p class="lead">Everything you can put in a WHERE clause: comparisons, AND/OR/NOT, BETWEEN, IN, LIKE, and the NULL trap.</p>
+<div class="goals"><b>After this topic you will</b> filter with every common operator, predict how AND/OR precedence changes results, search text with wildcards, and handle NULL correctly (three-valued logic).</div>
+<div class="tbl" data-src="customers"></div>
+
+<h2>Comparison operators</h2>
+<table class="cmp">
+<tr><th>Operator</th><th>Meaning</th><th>Example</th></tr>
+<tr><td><code>=</code></td><td>equal</td><td><code>Country = 'USA'</code></td></tr>
+<tr><td><code>&lt;&gt;</code> or <code>!=</code></td><td>not equal</td><td><code>Country &lt;&gt; 'USA'</code></td></tr>
+<tr><td><code>&gt;  &gt;=  &lt;  &lt;=</code></td><td>greater / less</td><td><code>Score &gt;= 500</code></td></tr>
+</table>
+<pre class="sql">SELECT FirstName, Score FROM Customers WHERE Score &gt;= 500;</pre>
+<div class="tbl" data-title="Result">
+FirstName | Score
+Kevin | 900
+Mary | 750
+Mark | 500
+</div>
+<p>Jossef (350) fails the test. Anna (NULL) also is not returned: <code>NULL &gt;= 500</code> is not true. Keep that in mind.</p>
+
+<h2>Combining conditions: AND, OR, NOT</h2>
+<ul>
+<li><code>A AND B</code>: both must be true. <code>A OR B</code>: at least one. <code>NOT A</code>: reverses.</li>
+<li><b>Precedence</b>: NOT first, then AND, then OR. Use parentheses to be explicit.</li>
+</ul>
+<pre class="sql">
+SELECT FirstName, Country, Score FROM Customers
+WHERE Country = 'Germany' OR Country = 'USA' AND Score &gt; 800;
+-- is read as:  Germany  OR  (USA AND Score &gt; 800)
+</pre>
+<div class="viz" data-id="prec"></div>
+<div class="callout warn"><b>Mixed AND/OR without brackets</b>is the most common filtering bug. <code>(Country='Germany' OR Country='USA') AND Score &gt; 800</code> returns only Kevin: a different answer.</div>
+
+<h2>BETWEEN, IN</h2>
+<pre class="sql">
+WHERE Score BETWEEN 500 AND 800          -- same as Score &gt;= 500 AND Score &lt;= 800 (both ends INCLUDED)
+WHERE Country IN ('Germany', 'India')    -- same as Country = 'Germany' OR Country = 'India'
+WHERE Country NOT IN ('USA')
+</pre>
+<div class="tbl" data-title="BETWEEN 500 AND 800">
+FirstName | Score
+Mary | 750
+Mark | 500
+</div>
+<div class="callout note"><b>BETWEEN with dates</b><code>OrderDate BETWEEN '2025-01-01' AND '2025-01-31'</code> is fine for a <code>DATE</code> column, but with <code>DATETIME</code> it misses everything after midnight on the 31st. Prefer <code>&gt;= '2025-01-01' AND &lt; '2025-02-01'</code> (topic 14).</div>
+
+<h2>LIKE: pattern matching on text</h2>
+<table class="cmp">
+<tr><th>Wildcard</th><th>Matches</th></tr>
+<tr><td><code>%</code></td><td>any number of characters (including none)</td></tr>
+<tr><td><code>_</code></td><td>exactly one character</td></tr>
+<tr><td><code>[abc]</code> / <code>[a-c]</code> / <code>[^a]</code></td><td>(T-SQL) one character from / in range / not in the set</td></tr>
+</table>
+<pre class="sql">
+WHERE FirstName LIKE 'M%'        -- starts with M      : Mary, Mark
+WHERE FirstName LIKE '%n'        -- ends with n        : Kevin
+WHERE FirstName LIKE '%ar%'      -- contains "ar"      : Mary, Mark
+WHERE FirstName LIKE '__r_'      -- 4 chars, 3rd is r  : Mary, Mark
+WHERE FirstName LIKE '[JK]%'     -- starts with J or K : Jossef, Kevin
+</pre>
+<div class="callout tip"><b>Performance</b><code>LIKE 'M%'</code> can use an index on the column. <code>LIKE '%ar%'</code> (leading wildcard) cannot, so it scans every row. Matching is case-insensitive by default in SQL Server (depends on collation).</div>
+
+<h2>NULL: unknown, not zero</h2>
+<p>NULL means "value unknown". Any comparison with NULL gives <b>UNKNOWN</b>, and WHERE keeps only rows that are <b>TRUE</b>.</p>
+<table class="cmp">
+<tr><th>Expression</th><th>Result</th></tr>
+<tr><td><code>NULL = NULL</code></td><td>UNKNOWN (not true!)</td></tr>
+<tr><td><code>NULL &lt;&gt; 5</code></td><td>UNKNOWN</td></tr>
+<tr><td><code>NULL IS NULL</code></td><td>TRUE</td></tr>
+<tr><td><code>TRUE AND UNKNOWN</code></td><td>UNKNOWN</td></tr>
+<tr><td><code>TRUE OR UNKNOWN</code></td><td>TRUE</td></tr>
+<tr><td><code>NOT UNKNOWN</code></td><td>UNKNOWN</td></tr>
+</table>
+<pre class="sql">
+SELECT FirstName FROM Customers WHERE Score = NULL;       -- returns nothing. Wrong!
+SELECT FirstName FROM Customers WHERE Score IS NULL;      -- Anna
+SELECT FirstName FROM Customers WHERE Score IS NOT NULL;  -- the other four
+
+-- "everyone NOT from Germany, including people with unknown country":
+WHERE Country &lt;&gt; 'Germany' OR Country IS NULL
+</pre>
+<div class="callout warn"><b>The NOT IN trap</b><code>x NOT IN (1, 2, NULL)</code> is never true: it expands to <code>x&lt;&gt;1 AND x&lt;&gt;2 AND x&lt;&gt;NULL</code>, and the last part is UNKNOWN. If a subquery behind NOT IN returns a NULL, you get <em>zero rows</em>. Use <code>NOT EXISTS</code> instead (topic 23).</div>
+
+<h2>Filtering patterns worth remembering</h2>
+<pre class="sql">
+WHERE OrderDate &gt;= '2025-02-01' AND OrderDate &lt; '2025-03-01'   -- a month, safe for any date type
+WHERE ShipDate IS NULL                                            -- not shipped yet
+WHERE Sales &gt; (SELECT AVG(Sales) FROM Orders)                    -- subquery (topic 23)
+</pre>
+
+<div class="ex"><b>Try it</b>
+<p>1) Customers whose name has an "a" and whose score is above 400. 2) Orders in February 2025 that are not Delivered. 3) Customers with no LastName. 4) Explain why <code>WHERE Score &lt;&gt; 900</code> does not return Anna, and rewrite it so it does.</p></div>
+</main>
+<script src="../assets/course.js"></script>
+<script>
+VIZ.prec = {
+  title: "WHERE Country='Germany' OR Country='USA' AND Score > 800",
+  tables: [pick(D.customers, ["CustomerID","FirstName","Country","Score"])],
+  result: { title: "Result", cols: ["FirstName","Country","Score"] },
+  steps: [
+    { note: "All 5 rows are tested one at a time." },
+    { note: "<b>AND binds first</b>: <code>Country='USA' AND Score &gt; 800</code>. Of the USA rows only Kevin (900) passes. Mary (750) and Anna (NULL) do not.",
+      mark: { customers: {0:"y",1:"g",2:"r",3:"y",4:"r"} } },
+    { note: "<b>Then OR</b> with <code>Country='Germany'</code>: Jossef and Mark qualify through this side.",
+      mark: { customers: {0:"g",1:"g",2:"r",3:"g",4:"r"} },
+      result: [["Jossef","Germany",350],["Kevin","USA",900],["Mark","Germany",500]] },
+    { note: "Final: 3 rows. Mary and Anna are out. Note Jossef (350) is in even though his score is below 800: the Score test belongs to the USA branch only." }
+  ]
+};
+</script>
+</body></html>

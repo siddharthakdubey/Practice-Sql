@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Window ranking</title><link rel="stylesheet" href="../assets/style.css"></head>
+<body data-page="20-window-ranking"><main>
+<h1>Window ranking</h1>
+<p class="lead">ROW_NUMBER, RANK, DENSE_RANK, NTILE, PERCENT_RANK and CUME_DIST: put rows in order, split them in buckets, pick the top N per group, remove duplicates.</p>
+<div class="goals"><b>After this topic you will</b> choose the right ranking function when values tie, build top-N-per-group and "latest row per key" queries, remove duplicates, and split data into equal buckets.</div>
+<div class="tbl" data-src="orders" data-cols="OrderID,CustomerID,OrderDate,Sales"></div>
+
+<h2>Ranking functions need ORDER BY, and take no arguments</h2>
+<pre class="sql">
+SELECT OrderID, Sales,
+       ROW_NUMBER() OVER (ORDER BY Sales DESC, OrderID) AS RowNum,
+       RANK()       OVER (ORDER BY Sales DESC)          AS Rnk,
+       DENSE_RANK() OVER (ORDER BY Sales DESC)          AS DenseRnk
+FROM Orders;
+</pre>
+<div class="viz" data-id="rank"></div>
+<table class="cmp">
+<tr><th>Function</th><th>Ties</th><th>Gaps after ties?</th><th>Use when</th></tr>
+<tr><td><code>ROW_NUMBER()</code></td><td>never ties: every row gets a unique 1,2,3... (ties broken arbitrarily unless you add a tie-breaker column)</td><td>no</td><td>unique id, pick exactly one row per group, dedup, pagination</td></tr>
+<tr><td><code>RANK()</code></td><td>tied rows share a rank</td><td><b>yes</b>: 1,2,3,<b>5,5</b>,7</td><td>sports style ("two silver medals, no bronze")</td></tr>
+<tr><td><code>DENSE_RANK()</code></td><td>tied rows share a rank</td><td><b>no</b>: 1,2,3,<b>5,5</b>,6</td><td>"2nd highest salary" (position among distinct values)</td></tr>
+</table>
+
+<h2>PARTITION BY: rank inside each group</h2>
+<pre class="sql">
+SELECT FirstName, Department, Salary,
+       RANK() OVER (PARTITION BY Department ORDER BY Salary DESC) AS DeptRank
+FROM Employees;
+</pre>
+<div class="tbl" data-title="Result: the numbering restarts for each department">
+FirstName | Department | Salary | DeptRank
+Kevin | Marketing | 65000 | 1
+Frank | Marketing | 55000 | 2
+Michael | Sales | 90000 | 1
+Mary | Sales | 75000 | 2
+Carol | Sales | 55000 | 3
+</div>
+
+<h2>Top-N per group</h2>
+<p>You cannot filter on a window function in WHERE, so rank in a CTE/subquery, then filter:</p>
+<pre class="sql">
+WITH r AS (
+    SELECT OrderID, CustomerID, Sales,
+           ROW_NUMBER() OVER (PARTITION BY CustomerID ORDER BY Sales DESC, OrderID) AS rn
+    FROM Orders
+)
+SELECT OrderID, CustomerID, Sales FROM r WHERE rn = 1;      -- the biggest order of each customer
+</pre>
+<div class="tbl" data-title="Result">
+OrderID | CustomerID | Sales
+1008 | 1 | 50
+1006 | 2 | 25
+1002 | 3 | 60
+1010 | 4 | 45
+1004 | 6 | 90
+</div>
+<p>Use <code>rn &lt;= 3</code> for "top 3 per customer". Choose RANK instead of ROW_NUMBER if you want <em>all</em> tied winners.</p>
+<div class="callout tip"><b>SQL Server shortcut</b><code>SELECT TOP 1 WITH TIES * FROM Orders ORDER BY Sales DESC</code> does a global top-1 including ties, no window needed. The window approach is what you need for "per group".</div>
+
+<h2>Latest row per key, and removing duplicates</h2>
+<pre class="sql">
+-- latest order of every customer
+SELECT * FROM (
+   SELECT *, ROW_NUMBER() OVER (PARTITION BY CustomerID ORDER BY OrderDate DESC) AS rn FROM Orders
+) t WHERE rn = 1;
+
+-- delete duplicates, keeping one row per (CustomerID, ProductID) -- a very common interview task
+WITH d AS (
+   SELECT ROW_NUMBER() OVER (PARTITION BY CustomerID, ProductID ORDER BY OrderID) AS rn FROM Orders
+)
+DELETE FROM d WHERE rn &gt; 1;           -- SQL Server lets you delete through a CTE
+</pre>
+<p>The sample Orders table has no such duplicates, so the DELETE would remove nothing. To see it work, insert a copy of an order first (new OrderID, same customer and product), and run the whole experiment inside <code>BEGIN TRAN ... ROLLBACK</code>.</p>
+
+<h2>NTILE(n): equal buckets</h2>
+<pre class="sql">
+SELECT OrderID, Sales, NTILE(3) OVER (ORDER BY Sales DESC, OrderID) AS Bucket FROM Orders;
+</pre>
+<div class="tbl" data-title="Result: 10 rows into 3 buckets (sizes 4, 3, 3)">
+OrderID | Sales | Bucket
+1004 | 90 | 1
+1002 | 60 | 1
+1008 | 50 | 1
+1010 | 45 | 1
+1005 | 40 | 2
+1007 | 40 | 2
+1006 | 25 | 2
+1001 | 20 | 3
+1009 | 20 | 3
+1003 | 10 | 3
+</div>
+<p>When rows do not divide evenly, the first buckets get one extra row. Uses: quartiles/deciles, "top 20% customers" (<code>NTILE(5)</code> bucket 1), splitting work into equal batches. Rows with equal values may land in different buckets (here the two 40s are together by luck, but they could be split).</p>
+
+<h2>PERCENT_RANK and CUME_DIST: relative position</h2>
+<pre class="sql">
+SELECT OrderID, Sales,
+       PERCENT_RANK() OVER (ORDER BY Sales) AS PctRank,   -- (rank - 1) / (rows - 1), from 0 to 1
+       CUME_DIST()    OVER (ORDER BY Sales) AS CumeDist   -- share of rows with value &lt;= this one
+FROM Orders;
+</pre>
+<div class="tbl" data-title="Result (ordered by Sales ascending)">
+OrderID | Sales | PctRank | CumeDist
+1003 | 10 | 0 | 0.1
+1001 | 20 | 0.111 | 0.3
+1009 | 20 | 0.111 | 0.3
+1006 | 25 | 0.333 | 0.4
+1005 | 40 | 0.444 | 0.6
+1007 | 40 | 0.444 | 0.6
+1010 | 45 | 0.667 | 0.7
+1008 | 50 | 0.778 | 0.8
+1002 | 60 | 0.889 | 0.9
+1004 | 90 | 1 | 1
+</div>
+<p>"This order is bigger than 77.8% of the others" (PERCENT_RANK), "70% of orders are at most this big" (CUME_DIST). Handy for percentile thresholds.</p>
+
+<h2>Remember</h2>
+<ul>
+<li>Always add a <b>tie-breaker</b> to ROW_NUMBER's ORDER BY (a unique column) for repeatable results.</li>
+<li>NULLs sort first in ASC, last in DESC; they get ranked like any value. Filter or push them with CASE if needed.</li>
+<li>Ranking ignores frames (ROWS/RANGE).</li>
+<li>Performance: an index matching <code>(PARTITION BY cols, ORDER BY cols)</code> lets SQL Server skip the sort step (topic 30, 31).</li>
+</ul>
+
+<div class="ex"><b>Try it</b>
+<p>1) The 2nd highest Sales value (DENSE_RANK = 2, in a CTE). 2) Each customer's first order. 3) Top 2 products by revenue in each Category (join Products). 4) Split employees into 2 salary halves with NTILE. 5) Explain why ROW_NUMBER would be the wrong choice for "all orders tied for the biggest".</p></div>
+</main>
+<script src="../assets/course.js"></script>
+<script>
+const sorted = D.orders.rows.map(r => [r[0], r[8]]).sort((a, b) => b[1] - a[1] || a[0] - b[0]);
+const T = { id: "s", title: "Orders sorted by Sales DESC", cols: ["OrderID","Sales"], rows: sorted };
+let prevRank = 0, prevVal = null, dense = 0;
+const rows = sorted.map((r, i) => {
+  const tie = r[1] === prevVal;
+  if (!tie) { prevRank = i + 1; dense++; }
+  prevVal = r[1];
+  return { r, n: i + 1, rank: prevRank, dense, tie };
+});
+VIZ.rank = {
+  title: "Same data, three ranking functions",
+  tables: [T], result: { title: "Result", cols: ["OrderID","Sales","ROW_NUMBER","RANK","DENSE_RANK"] },
+  steps: [
+    { note: "The window <code>ORDER BY Sales DESC</code> lines the rows up from biggest to smallest. Now we hand out numbers going down the list." },
+    ...rows.map((x, i) => ({
+      note: "Order <b>" + x.r[0] + "</b> (Sales " + x.r[1] + "): ROW_NUMBER = <b>" + x.n + "</b> (always +1). RANK = <b>" + x.rank + "</b>" +
+        (x.tie ? " (<b>tie</b> with the row above, so it repeats that rank)" : (x.rank !== x.n ? " (jumps: earlier ties used up numbers, so a <b>gap</b>)" : "")) +
+        ". DENSE_RANK = <b>" + x.dense + "</b>" + (x.tie ? " (same as above)" : (x.dense !== x.rank ? " (no gap: next distinct value gets the next number)" : "")) + ".",
+      mark: { s: { [i]: x.tie ? "y" : "g" } }, add: [[x.r[0], x.r[1], x.n, x.rank, x.dense]]
+    }))
+  ]
+};
+</script>
+</body></html>

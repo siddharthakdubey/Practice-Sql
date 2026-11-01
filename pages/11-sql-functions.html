@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SQL functions (overview)</title><link rel="stylesheet" href="../assets/style.css"></head>
+<body data-page="11-sql-functions"><main>
+<h1>SQL functions (overview)</h1>
+<p class="lead">A function takes values in and gives a value back. This topic is the map for the next ten.</p>
+<div class="goals"><b>After this topic you will</b> tell single-row, aggregate and window functions apart, nest functions, and know which family to reach for.</div>
+
+<h2>Two main kinds: row-level and multi-row</h2>
+<div class="cmpwrap"><table class="cmp">
+<tr><th></th><th>Single-row (scalar) functions</th><th>Multi-row functions</th></tr>
+<tr><td>Input</td><td>One row's value(s)</td><td>Many rows</td></tr>
+<tr><td>Output</td><td>One value <b>per input row</b></td><td>Aggregate: <b>one value per group</b> (rows collapse). Window: one value per row <b>and</b> rows stay.</td></tr>
+<tr><td>Examples</td><td><code>UPPER</code>, <code>ROUND</code>, <code>DATEADD</code>, <code>ISNULL</code>, <code>CASE</code></td><td>Aggregate: <code>SUM</code>, <code>COUNT</code>, <code>AVG</code>. Window: <code>SUM() OVER</code>, <code>RANK</code>, <code>LAG</code></td></tr>
+<tr><td>Topics</td><td>12 string, 13 numeric, 14 date/time, 15 NULL, 16 CASE</td><td>17 aggregate, 18-21 window</td></tr>
+</table></div>
+
+<h3>Single-row function: rows in = rows out</h3>
+<pre class="sql">SELECT FirstName, UPPER(FirstName) AS Shout FROM Customers;</pre>
+<div class="viz" data-id="single"></div>
+
+<h3>Aggregate function: many rows in, one row out</h3>
+<pre class="sql">SELECT SUM(Score) AS TotalScore FROM Customers;</pre>
+<div class="viz" data-id="agg"></div>
+<p>(A window function, topic 18, is the third option: it computes across rows but <em>keeps</em> every row.)</p>
+
+<h2>Nesting: functions inside functions</h2>
+<p>Run from the <b>innermost</b> outwards, like brackets in maths.</p>
+<pre class="sql">
+SELECT UPPER(LEFT(TRIM('  kevin brown '), 5));
+--      4          3     2          1
+-- 1) TRIM  -&gt; 'kevin brown'
+-- 2) LEFT 5 -&gt; 'kevin'
+-- 3) UPPER -&gt; 'KEVIN'
+</pre>
+
+<h2>Where can a function be used?</h2>
+<table class="cmp">
+<tr><th>Clause</th><th>Example</th></tr>
+<tr><td>SELECT</td><td><code>SELECT ROUND(Sales, 0)</code></td></tr>
+<tr><td>WHERE</td><td><code>WHERE YEAR(OrderDate) = 2025</code> (works, but see the warning)</td></tr>
+<tr><td>JOIN ... ON</td><td><code>ON LOWER(a.Email) = LOWER(b.Email)</code></td></tr>
+<tr><td>GROUP BY / ORDER BY</td><td><code>GROUP BY MONTH(OrderDate)</code></td></tr>
+</table>
+<div class="callout warn"><b>Functions on columns can kill index use ("non-sargable")</b><code>WHERE YEAR(OrderDate) = 2025</code> forces the engine to compute YEAR() for every row, so an index on OrderDate cannot be used. Rewrite as <code>WHERE OrderDate &gt;= '2025-01-01' AND OrderDate &lt; '2026-01-01'</code>. Details in topics 30 and 33.</div>
+
+<h2>The function families</h2>
+<table class="cmp">
+<tr><th>Family</th><th>Typical tasks</th><th>Key T-SQL functions</th></tr>
+<tr><td>String</td><td>clean, cut, join, search text</td><td>CONCAT, UPPER, LOWER, TRIM, REPLACE, LEN, LEFT, RIGHT, SUBSTRING, CHARINDEX</td></tr>
+<tr><td>Numeric</td><td>rounding, absolute value</td><td>ROUND, ABS, CEILING, FLOOR, POWER, SQRT</td></tr>
+<tr><td>Date/time</td><td>extract parts, add, difference, format</td><td>GETDATE, YEAR, DATEPART, DATEADD, DATEDIFF, EOMONTH, FORMAT</td></tr>
+<tr><td>NULL</td><td>replace or detect NULL</td><td>ISNULL, COALESCE, NULLIF, IS NULL</td></tr>
+<tr><td>Conditional</td><td>if/else logic</td><td>CASE, IIF</td></tr>
+<tr><td>Conversion</td><td>change type</td><td>CAST, CONVERT, TRY_CAST, TRY_CONVERT</td></tr>
+<tr><td>Aggregate</td><td>summarise rows</td><td>COUNT, SUM, AVG, MIN, MAX, STRING_AGG</td></tr>
+<tr><td>Window</td><td>rank, running totals, previous/next row</td><td>ROW_NUMBER, RANK, LAG, LEAD, SUM() OVER</td></tr>
+</table>
+
+<h2>Type conversion (used everywhere)</h2>
+<pre class="sql">
+SELECT CAST('123' AS INT) + 1;                 -- 124   (ANSI standard)
+SELECT CONVERT(VARCHAR(10), GETDATE(), 23);    -- '2026-11-01'  (T-SQL, style 23 = yyyy-mm-dd)
+SELECT TRY_CAST('abc' AS INT);                 -- NULL instead of an error: great for dirty data
+SELECT 10 / 4;                                 -- 2   (integer division!)
+SELECT 10 / 4.0;                               -- 2.500000
+</pre>
+<div class="callout note"><b>Implicit conversion</b>SQL Server converts types silently when they differ (<code>'1' + 1</code> = 2). That is convenient but slow on join/filter columns and a source of subtle bugs. Match types explicitly.</div>
+
+<div class="ex"><b>Try it</b>
+<p>Classify each function as single-row, aggregate or window: <code>LEN</code>, <code>AVG</code>, <code>RANK() OVER (...)</code>, <code>DATEADD</code>, <code>COUNT</code>. Then run <code>SELECT 10 / 4, 10 / 4.0, CAST(10 AS DECIMAL(5,2)) / 4;</code> and explain the three answers.</p></div>
+</main>
+<script src="../assets/course.js"></script>
+<script>
+const c = pick(D.customers, ["FirstName","Score"]);
+VIZ.single = {
+  title: "UPPER() works on each row on its own",
+  tables: [c], result: { title: "Result", cols: ["FirstName","Shout"] },
+  steps: [
+    { note: "5 input rows." },
+    ...c.rows.map((r, i) => ({ note: "Row " + (i + 1) + ": <code>UPPER('" + r[0] + "')</code> = <b>" + r[0].toUpperCase() + "</b>.", mark: { customers: { [i]: "y" } }, cols: { customers: [0] }, add: [[r[0], r[0].toUpperCase()]] })),
+    { note: "5 rows in, 5 rows out." }
+  ]
+};
+VIZ.agg = {
+  title: "SUM() collapses the rows",
+  tables: [c], result: { title: "Result", cols: ["TotalScore"] },
+  steps: [
+    { note: "5 input rows. One has a NULL score (Anna)." },
+    { note: "SUM adds the values as it reads them: 350, +900, +750, +500. <b>NULL is skipped</b>, not treated as 0 (nor as an error).", mark: { customers: {0:"g",1:"g",2:"g",3:"g",4:"r"} }, cols: { customers: [1] } },
+    { note: "5 rows in, <b>1 row</b> out: 2500.", result: [[2500]] }
+  ]
+};
+</script>
+</body></html>

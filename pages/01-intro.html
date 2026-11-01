@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Intro: how to use this course</title><link rel="stylesheet" href="../assets/style.css"></head>
+<body data-page="01-intro"><main>
+<h1>Intro: how to use this course</h1>
+<p class="lead">A 30-second map of the road from <code>SELECT *</code> to execution plans and partitions.</p>
+
+<div class="goals"><b>After this topic you will</b> know what the course covers, how each topic is laid out, and the one idea that makes SQL click: <em>a query is a pipeline of tables</em>.</div>
+
+<h2>The three levels</h2>
+<div class="cmpwrap"><table class="cmp">
+<tr><th>Level</th><th>You learn</th><th>Mindset</th></tr>
+<tr><td>🟢 Beginner</td><td>What a database is, setting up, SELECT, creating tables (DDL), changing data (DML)</td><td>"Get rows out, put rows in."</td></tr>
+<tr><td>🟡 Intermediate</td><td>Filtering, joins, set operators, functions (string, numeric, date, NULL), CASE, aggregates, window functions</td><td>"Shape and combine data."</td></tr>
+<tr><td>🔴 Advanced</td><td>Subqueries, CTEs, views, temp tables, stored procedures, triggers, indexes, execution plans, partitions, tuning, AI with SQL</td><td>"Write it so it is correct, readable and fast."</td></tr>
+</table></div>
+
+<h2>How every topic is laid out</h2>
+<ol>
+<li><b>Why it exists</b>: the problem the feature solves.</li>
+<li><b>Syntax</b>: the shape of the statement, in T-SQL.</li>
+<li><b>Worked examples</b> on the same four tables, with the exact result.</li>
+<li><b>Visual</b>: a step-by-step animation of rows moving. Press <b>Next ▶</b>, <b>Back</b>, or <b>Auto-play</b>.</li>
+<li><b>Pitfalls</b> and a <b>Try it</b> box.</li>
+</ol>
+
+<h2>The one idea: a query is a pipeline of tables</h2>
+<p>Every SQL step takes a table in and gives a table out. <code>FROM</code> gives you a table, <code>WHERE</code> shrinks it, <code>GROUP BY</code> collapses it, <code>SELECT</code> reshapes it, <code>ORDER BY</code> sorts it. Even a join or a subquery just produces another table. Once you see this, complex queries become small steps in a row.</p>
+
+<div class="viz" data-id="pipeline"></div>
+
+<div class="callout key"><b>Remember</b>SQL is <em>declarative</em>: you describe <em>what</em> result you want, not <em>how</em> to loop over rows. The database engine (the optimizer) decides the how. That is why the same result can have very different speed, which is the topic of the advanced chapters.</div>
+
+<h2>The sample database</h2>
+<p>Four tables: <code>Customers</code>, <code>Orders</code>, <code>Products</code>, <code>Employees</code>. Their data is shown on the <a href="../index.html">course home page</a> and created by <a href="../sql/00_setup.sql">00_setup.sql</a>. Keep that page open in another tab. You will check your predictions against it often.</p>
+
+<div class="ex"><b>Try it</b>
+<p>Before moving on, look at the <code>Orders</code> table on the home page. Without running anything, guess: how many orders are there? Which customer ID in <code>Orders</code> does not exist in <code>Customers</code>? (Answers: 10; customer 6, in order 1004.)</p></div>
+
+</main>
+<script src="../assets/course.js"></script>
+<script>
+VIZ.pipeline = {
+  title: "Total sales per status, for orders of 2 or more items, biggest first",
+  query: "SELECT OrderStatus, SUM(Sales) AS Total\nFROM Orders\nWHERE Quantity >= 2\nGROUP BY OrderStatus\nORDER BY Total DESC;",
+  tables: [pick(D.orders, ["OrderID","OrderStatus","Quantity","Sales"])],
+  result: { title: "Result", cols: ["OrderStatus","Total"] },
+  steps: [
+    { note: "<b>1. FROM Orders</b>: the engine starts with the whole table: 10 rows." },
+    { note: "<b>2. WHERE Quantity >= 2</b>: rows that fail the test are thrown away <em>before</em> any grouping. 6 rows are kept.",
+      mark: { orders: {0:"g",1:"g",2:"r",3:"g",4:"g",5:"r",6:"g",7:"g",8:"r",9:"r"} } },
+    { note: "<b>3. GROUP BY OrderStatus</b>: the surviving rows are put into buckets, one per status (blue = Delivered, purple = Shipped, orange = Processing).",
+      mark: { orders: {0:"b",1:"p",2:"r",3:"p",4:"b",5:"r",6:"o",7:"b",8:"r",9:"r"} } },
+    { note: "<b>4. SUM(Sales)</b> and <b>SELECT</b>: each bucket collapses into ONE row. Delivered = 20+40+50 = 110, Shipped = 60+90 = 150, Processing = 40.",
+      mark: { orders: {0:"b",1:"p",2:"r",3:"p",4:"b",5:"r",6:"o",7:"b",8:"r",9:"r"} },
+      result: [["Delivered",110],["Shipped",150],["Processing",40]] },
+    { note: "<b>5. ORDER BY Total DESC</b>: finally the result rows are sorted. Only now can the alias <code>Total</code> be used.",
+      result: [["Shipped",150],["Delivered",110],["Processing",40]] }
+  ]
+};
+</script>
+</body></html>

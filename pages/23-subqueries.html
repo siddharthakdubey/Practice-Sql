@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Subqueries</title><link rel="stylesheet" href="../assets/style.css"></head>
+<body data-page="23-subqueries"><main>
+<h1>Subqueries</h1>
+<p class="lead">A query inside another query. Learn the kinds, where they can sit, and how the correlated kind really runs.</p>
+<div class="goals"><b>After this topic you will</b> write scalar, multi-row, table and correlated subqueries, choose between IN, EXISTS and JOIN, use ANY/ALL, and avoid the NOT IN NULL trap.</div>
+
+<h2>What is a subquery?</h2>
+<p>A <code>SELECT</code> in parentheses used as a value, a list, or a table inside another statement (the <b>outer query</b>). The inner query runs first (conceptually), and its result feeds the outer one.</p>
+<table class="cmp">
+<tr><th>Kind</th><th>Returns</th><th>Where it can sit</th></tr>
+<tr><td><b>Scalar</b></td><td>one row, one column (a single value)</td><td>anywhere an expression fits: SELECT, WHERE, HAVING</td></tr>
+<tr><td><b>Multi-row (list)</b></td><td>one column, many rows</td><td>with <code>IN</code>, <code>ANY</code>, <code>ALL</code>, <code>EXISTS</code></td></tr>
+<tr><td><b>Table (derived table)</b></td><td>many rows and columns</td><td>FROM or JOIN, with an alias</td></tr>
+<tr><td><b>Correlated</b></td><td>depends on the current outer row</td><td>usually WHERE or SELECT</td></tr>
+</table>
+
+<h2>1. Scalar subquery</h2>
+<pre class="sql">
+SELECT OrderID, Sales
+FROM Orders
+WHERE Sales &gt; (SELECT AVG(Sales) FROM Orders);      -- inner returns one number: 40
+</pre>
+<div class="tbl" data-title="Result">
+OrderID | Sales
+1002 | 60
+1004 | 90
+1008 | 50
+1010 | 45
+</div>
+<p>If a scalar subquery returns more than one row, you get an error; if it returns none, it yields NULL. Also usable in SELECT:</p>
+<pre class="sql">
+SELECT FirstName,
+       (SELECT COUNT(*) FROM Orders o WHERE o.CustomerID = c.CustomerID) AS OrderCount     -- correlated
+FROM Customers c;
+</pre>
+<div class="tbl" data-title="Result">
+FirstName | OrderCount
+Jossef | 2
+Kevin | 3
+Mary | 2
+Mark | 2
+Anna | 0
+</div>
+
+<h2>2. Multi-row subquery: IN</h2>
+<pre class="sql">
+SELECT FirstName FROM Customers
+WHERE CustomerID IN (SELECT CustomerID FROM Orders WHERE OrderStatus = 'Delivered');
+-- inner returns the list (2, 1, 4, 2, 1, 4): result Jossef, Kevin, Mark
+</pre>
+<p><code>ANY</code> / <code>ALL</code> compare with a whole list:</p>
+<pre class="sql">
+SELECT OrderID, Sales FROM Orders
+WHERE Sales &gt; ALL (SELECT Sales FROM Orders WHERE CustomerID = 2);   -- bigger than EVERY order of customer 2 (max 25)
+-- ANY: bigger than at least one (= bigger than the minimum 20); "= ANY" is the same as IN
+</pre>
+
+<h2>3. Derived table: subquery in FROM</h2>
+<p>Treat a query result as a temporary table. It <b>must have an alias</b>, and every column needs a name.</p>
+<pre class="sql">
+SELECT c.FirstName, t.Total
+FROM Customers c
+JOIN (SELECT CustomerID, SUM(Sales) AS Total FROM Orders GROUP BY CustomerID) AS t
+     ON t.CustomerID = c.CustomerID
+WHERE t.Total &gt; 60;
+</pre>
+<div class="tbl" data-title="Result">
+FirstName | Total
+Kevin | 65
+Mary | 100
+Mark | 85
+</div>
+<p>This is the "aggregate first, then join" fix for the fan-out problem (topic 17). It is also the way to filter on a window function result (topic 18). A CTE does the same with better readability (topic 24).</p>
+
+<h2>4. Correlated subquery: runs once per outer row</h2>
+<p>The inner query refers to a column of the outer query, so it cannot run on its own; it is re-evaluated for each outer row (the optimizer often rewrites it into a join, but think of it as a loop).</p>
+<pre class="sql">
+-- orders bigger than the average of THEIR OWN customer's orders
+SELECT o.OrderID, o.CustomerID, o.Sales
+FROM Orders o
+WHERE o.Sales &gt; (SELECT AVG(o2.Sales)
+                 FROM Orders o2
+                 WHERE o2.CustomerID = o.CustomerID);     -- o.CustomerID comes from the outer row
+</pre>
+<div class="viz" data-id="corr"></div>
+
+<h2>5. EXISTS: "is there at least one?"</h2>
+<pre class="sql">
+SELECT FirstName FROM Customers c
+WHERE EXISTS (SELECT 1 FROM Orders o WHERE o.CustomerID = c.CustomerID);          -- Jossef, Kevin, Mary, Mark
+
+SELECT FirstName FROM Customers c
+WHERE NOT EXISTS (SELECT 1 FROM Orders o WHERE o.CustomerID = c.CustomerID);      -- Anna
+</pre>
+<ul>
+<li>EXISTS returns TRUE/FALSE and <b>stops at the first match</b>. What the inner SELECT lists does not matter (<code>SELECT 1</code> is the convention).</li>
+<li>Unlike a JOIN it never multiplies rows: Kevin appears once, not three times.</li>
+</ul>
+
+<h2>The NOT IN trap (NULL)</h2>
+<pre class="sql">
+SELECT FirstName FROM Customers
+WHERE CustomerID NOT IN (SELECT CustomerID FROM Orders);                    -- Anna: fine today
+-- but if Orders.CustomerID ever contains a NULL:
+SELECT FirstName FROM Customers
+WHERE CustomerID NOT IN (SELECT CustomerID FROM Orders UNION ALL SELECT NULL);   -- returns NO ROWS
+</pre>
+<div class="callout warn"><b>Why</b><code>x NOT IN (2, 3, NULL)</code> means <code>x&lt;&gt;2 AND x&lt;&gt;3 AND x&lt;&gt;NULL</code>; the last part is UNKNOWN, so the whole thing can never be TRUE. <b>Prefer NOT EXISTS</b> (or a LEFT JOIN ... IS NULL anti join) for "not in". Safe patch if you must: <code>NOT IN (SELECT CustomerID FROM Orders WHERE CustomerID IS NOT NULL)</code>.</div>
+
+<h2>IN vs EXISTS vs JOIN</h2>
+<table class="cmp">
+<tr><th></th><th>IN</th><th>EXISTS</th><th>JOIN</th></tr>
+<tr><td>Purpose</td><td>match against a list</td><td>test existence</td><td>bring columns from the other table</td></tr>
+<tr><td>Duplicates in output</td><td>no</td><td>no</td><td>yes (one per match)</td></tr>
+<tr><td>NULL-safe for NOT?</td><td><b>no</b></td><td>yes</td><td>(anti join) yes</td></tr>
+<tr><td>Needs columns from the other table?</td><td>no</td><td>no</td><td><b>yes</b>, then use JOIN</td></tr>
+</table>
+<p>Modern optimizers often produce the same plan for IN, EXISTS and an inner JOIN; choose for <b>clarity and correctness</b>, then check the plan (topic 31).</p>
+
+<h2>Other rules</h2>
+<ul>
+<li>A subquery cannot have <code>ORDER BY</code> unless it also has <code>TOP</code>/<code>OFFSET</code> (the order is meaningless inside).</li>
+<li>Subqueries can nest, but past two levels CTEs are far easier to read.</li>
+<li>A subquery in the SELECT list that is correlated runs for every row: fine for hundreds, slow for millions. Use a join + group by instead.</li>
+</ul>
+
+<div class="ex"><b>Try it</b>
+<p>1) Products priced above the average price. 2) Customers who bought a product from the Clothing category (use IN or EXISTS). 3) The employee(s) with the highest salary using a scalar subquery with <code>MAX</code>. 4) Each employee with the department average salary in an extra column, first with a correlated subquery, then with a window function (topic 19) and compare.</p></div>
+</main>
+<script src="../assets/course.js"></script>
+<script>
+const o = pick(D.orders, ["OrderID","CustomerID","Sales"]);
+const outer = { id: "o", title: "Orders (outer query: o)", cols: ["OrderID","CustomerID","Sales"], rows: o.rows };
+VIZ.corr = {
+  title: "The inner AVG is recalculated for every outer row",
+  query: "WHERE o.Sales > (SELECT AVG(o2.Sales)\n   FROM Orders o2\n   WHERE o2.CustomerID = o.CustomerID)",
+  tables: [outer], result: { title: "Result", cols: ["OrderID","CustomerID","Sales"] },
+  steps: [
+    { note: "The outer query visits each order. For each one it runs the inner query with <b>that order's CustomerID</b>." },
+    ...o.rows.map((r, i) => {
+      const same = o.rows.map((x, k) => [x, k]).filter(([x]) => x[1] === r[1]);
+      const avg = same.reduce((s, [x]) => s + x[2], 0) / same.length, ok = r[2] > avg;
+      const mk = {}; same.forEach(([, k]) => mk[k] = "b"); mk[i] = ok ? "g" : "r";
+      return { note: "Order <b>" + r[0] + "</b> (customer " + r[1] + "): inner query averages that customer's orders (" + same.map(([x]) => x[2]).join(", ") + ") = <b>" + (Math.round(avg * 100) / 100) + "</b>. " + r[2] + (ok ? " &gt; " : " &le; ") + (Math.round(avg * 100) / 100) + " &rarr; " + (ok ? "<b>kept</b>." : "dropped."),
+        mark: { o: mk }, add: ok ? [[r[0], r[1], r[2]]] : [] };
+    }),
+    { note: "Result: 4 orders (1002, 1006, 1008, 1010). Customer 6 has only one order, which can never beat its own average." }
+  ]
+};
+</script>
+</body></html>

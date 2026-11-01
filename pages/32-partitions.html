@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Partitions</title><link rel="stylesheet" href="../assets/style.css"></head>
+<body data-page="32-partitions"><main>
+<h1>Partitions</h1>
+<p class="lead">Split one huge table into smaller pieces by a key such as date. Queries touch only the pieces they need, and old data can be removed in an instant.</p>
+<div class="goals"><b>After this topic you will</b> explain partitioning, create a partition function, scheme and partitioned table, understand partition elimination and the sliding-window pattern, and know when partitioning helps and when it does not.</div>
+
+<h2>The idea</h2>
+<p>A partitioned table is still <b>one table</b> to your queries, but its rows are stored in several physical <b>partitions</b>, chosen by the value of a <b>partitioning column</b> (usually a date). Think of a filing cabinet with one drawer per month instead of one giant heap of paper.</p>
+<table class="cmp">
+<tr><th>Benefit</th><th>How</th></tr>
+<tr><td><b>Partition elimination</b></td><td>a query on March only reads the March partition; the others are skipped</td></tr>
+<tr><td><b>Fast data loading/removal</b></td><td><code>SWITCH</code> moves a whole partition in or out as a metadata change (milliseconds, no row-by-row delete)</td></tr>
+<tr><td><b>Maintenance per piece</b></td><td>rebuild an index or compress only the hot partition</td></tr>
+<tr><td><b>Storage tiers</b></td><td>old partitions on cheap disks, current ones on fast SSD (filegroups)</td></tr>
+</table>
+<div class="callout warn"><b>Partitioning is not an index and not automatic speed</b>It mainly helps very large tables (hundreds of millions of rows, hundreds of GB) and manageability. On a small table it adds complexity for no gain. A good index usually beats partitioning for pure query speed.</div>
+
+<h2>The three building blocks (SQL Server)</h2>
+<pre class="sql">
+-- 1. PARTITION FUNCTION: where are the boundaries?
+CREATE PARTITION FUNCTION pf_OrderDate (DATE)
+AS RANGE RIGHT FOR VALUES ('2025-02-01', '2025-03-01');
+--   partition 1: OrderDate &lt; 2025-02-01
+--   partition 2: 2025-02-01 &lt;= OrderDate &lt; 2025-03-01
+--   partition 3: OrderDate &gt;= 2025-03-01             (RANGE RIGHT: the boundary value belongs to the RIGHT partition)
+
+-- 2. PARTITION SCHEME: where is each partition stored? (filegroups)
+CREATE PARTITION SCHEME ps_OrderDate
+AS PARTITION pf_OrderDate ALL TO ([PRIMARY]);              -- or a different filegroup per partition
+
+-- 3. TABLE created ON the scheme, naming the partitioning column
+CREATE TABLE dbo.OrdersPart (
+    OrderID   INT           NOT NULL,
+    OrderDate DATE          NOT NULL,
+    CustomerID INT          NULL,
+    Sales     DECIMAL(10,2) NOT NULL,
+    CONSTRAINT pk_OrdersPart PRIMARY KEY CLUSTERED (OrderID, OrderDate)   -- the partition column must be part of unique keys
+) ON ps_OrderDate (OrderDate);
+</pre>
+<ul>
+<li><b>N boundary values make N+1 partitions.</b> Two boundaries here, three partitions.</li>
+<li><code>RANGE LEFT</code> vs <code>RANGE RIGHT</code> decides which side the boundary value goes to. For dates, <b>RIGHT</b> with first-of-month boundaries is the natural choice.</li>
+<li>The partition column must be <b>part of every unique index</b> (including the primary key). That is a design constraint to plan for.</li>
+</ul>
+
+<h2>See the rows land in partitions</h2>
+<pre class="sql">
+INSERT INTO dbo.OrdersPart (OrderID, OrderDate, CustomerID, Sales)
+SELECT OrderID, OrderDate, CustomerID, Sales FROM Orders;
+
+SELECT $PARTITION.pf_OrderDate(OrderDate) AS PartitionNo,    -- which partition would this date go to?
+       COUNT(*) AS Rows, MIN(OrderDate) AS FromDate, MAX(OrderDate) AS ToDate
+FROM dbo.OrdersPart
+GROUP BY $PARTITION.pf_OrderDate(OrderDate)
+ORDER BY PartitionNo;
+</pre>
+<div class="tbl" data-title="Result">
+PartitionNo | Rows | FromDate | ToDate
+1 | 4 | 2025-01-01 | 2025-01-20
+2 | 3 | 2025-02-01 | 2025-02-15
+3 | 3 | 2025-03-01 | 2025-03-15
+</div>
+
+<h2>Partition elimination</h2>
+<pre class="sql">
+SELECT OrderID, Sales FROM dbo.OrdersPart WHERE OrderDate &gt;= '2025-03-01';
+</pre>
+<div class="viz" data-id="elim"></div>
+<p>In the actual execution plan, the scan operator shows <b>Actual Partition Count = 1</b> (of 3). For elimination to work, filter <b>directly on the partition column</b>, sargable (no <code>YEAR(OrderDate) = 2025</code>), and with a matching data type.</p>
+
+<h2>The sliding window: add new, drop old</h2>
+<p>Typical for logs and transactions: keep the last N months online.</p>
+<pre class="sql">
+-- add next month: split the last (empty) partition
+ALTER PARTITION SCHEME ps_OrderDate NEXT USED [PRIMARY];
+ALTER PARTITION FUNCTION pf_OrderDate() SPLIT RANGE ('2025-04-01');
+
+-- remove the oldest month instantly: switch it into an identical, empty archive table
+ALTER TABLE dbo.OrdersPart SWITCH PARTITION 1 TO dbo.OrdersArchive;     -- metadata only: no rows are copied or logged
+-- then merge away the empty boundary
+ALTER PARTITION FUNCTION pf_OrderDate() MERGE RANGE ('2025-02-01');
+</pre>
+<p>Compare with <code>DELETE FROM Orders WHERE OrderDate &lt; ...</code>, which logs every row and can run for hours on a large table. SWITCH takes milliseconds.</p>
+
+<h2>Aligned indexes</h2>
+<p>Create nonclustered indexes on the same partition scheme (<code>ON ps_OrderDate(OrderDate)</code>, which is the default if you omit ON): they are <b>aligned</b>, so SWITCH and per-partition maintenance still work.</p>
+
+<h2>Partitioning vs related ideas</h2>
+<table class="cmp">
+<tr><th></th><th>What it is</th><th>Use</th></tr>
+<tr><td><b>Index</b></td><td>sorted lookup structure on columns</td><td>speed up selective queries</td></tr>
+<tr><td><b>Partitioning</b></td><td>one table stored as several pieces by a key</td><td>manageability, elimination, archiving on very large tables</td></tr>
+<tr><td><b>Manual split (Orders_2024, Orders_2025)</b></td><td>separate tables united by a view</td><td>old technique (partitioned view); more admin</td></tr>
+<tr><td><b>Sharding</b></td><td>data spread over several <em>servers</em></td><td>scale beyond one machine (application-level or distributed DB)</td></tr>
+<tr><td><b>Vertical partitioning</b></td><td>split <em>columns</em> (hot vs rarely used / large) into two tables</td><td>smaller rows, faster scans</td></tr>
+</table>
+<p>Other databases: PostgreSQL has declarative partitioning (<code>PARTITION BY RANGE (OrderDate)</code>, one child table per partition), MySQL has <code>PARTITION BY RANGE</code>, Oracle has a full partitioning option. The ideas are the same.</p>
+
+<h2>Design checklist</h2>
+<ol>
+<li>Is the table very large and growing (and typically queried by a date range)? If not, skip it.</li>
+<li>Pick a partition column that appears in most queries' filters, with a natural range (date).</li>
+<li>Choose granularity (month is common) so partitions are not tiny (thousands of them hurt) nor too big.</li>
+<li>Include the column in the clustered/primary key. Keep indexes aligned.</li>
+<li>Automate creating future partitions (a scheduled job), or inserts past the last boundary pile into the last partition.</li>
+<li>Test with the actual plan for elimination, and keep statistics up to date.</li>
+</ol>
+
+<div class="ex"><b>Try it</b>
+<p>1) Create the objects above and load <code>OrdersPart</code>; run the <code>$PARTITION</code> query. 2) Turn on the actual plan and compare <code>WHERE OrderDate &gt;= '2025-03-01'</code> with <code>WHERE MONTH(OrderDate) = 3</code>: which eliminates partitions? 3) Split a new boundary '2025-04-01' and insert an April order. 4) Query <code>sys.partitions</code> for row counts per partition: <code>SELECT partition_number, rows FROM sys.partitions WHERE object_id = OBJECT_ID('dbo.OrdersPart') AND index_id = 1;</code></p></div>
+</main>
+<script src="../assets/course.js"></script>
+<script>
+const o = pick(D.orders, ["OrderID","OrderDate","Sales"]);
+const part = r => r[1] < "2025-02-01" ? 1 : r[1] < "2025-03-01" ? 2 : 3;
+const pc = { 1: "b", 2: "p", 3: "o" };
+const all = {}; o.rows.forEach((r, i) => all[i] = pc[part(r)]);
+const skip = {}; o.rows.forEach((r, i) => skip[i] = part(r) === 3 ? "g" : "r");
+const p3 = o.rows.filter(r => part(r) === 3);
+VIZ.elim = {
+  title: "Table split into 3 partitions by OrderDate",
+  query: "SELECT OrderID, Sales FROM OrdersPart\nWHERE OrderDate >= '2025-03-01';",
+  tables: [o], result: { title: "Result", cols: ["OrderID","Sales"] },
+  steps: [
+    { note: "The table is stored in three partitions: <b>1 (January, blue)</b>, <b>2 (February, purple)</b>, <b>3 (March onwards, orange)</b>." , mark: { orders: all } },
+    { note: "<b>Partition elimination:</b> the optimizer compares the filter with the boundary values (2025-02-01, 2025-03-01) and works out that only <b>partition 3</b> can contain matching rows. Partitions 1 and 2 are never read (red).", mark: { orders: skip } },
+    { note: "Only partition 3 is scanned: 3 rows read, 3 returned. Without partitioning, all 10 rows (or the whole index) would have been examined. On a billion-row table this is the difference between reading 1/36th of the data (3 years of months) and all of it.",
+      mark: { orders: skip }, add: p3.map(r => [r[0], r[2]]) },
+    { note: "<b>Bonus, the sliding window:</b> to archive January, <code>ALTER TABLE ... SWITCH PARTITION 1 TO OrdersArchive</code> re-points the partition's pages to another table. No rows are copied or deleted one by one: it takes milliseconds.",
+      mark: { orders: { 0:"y",1:"y",2:"y",3:"y",4:"r",5:"r",6:"r",7:"r",8:"r",9:"r" } } }
+  ]
+};
+</script>
+</body></html>

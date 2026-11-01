@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Learn SQL: Beginner to Advanced</title><link rel="stylesheet" href="assets/style.css"></head>
+<body>
+<main style="max-width:1000px;margin:0 auto">
+<div class="hero"><h1>Learn SQL: Beginner to Advanced</h1>
+<p>34 topics, one small shared database, and a step-by-step visual for every concept where data moves (joins, GROUP BY, windows, CTEs, indexes...). Dialect: <b>SQL Server (T-SQL)</b>.</p></div>
+
+<div class="goals"><b>How to use this course</b>
+<ol>
+<li>Run <a href="sql/00_setup.sql"><code>sql/00_setup.sql</code></a> once in SSMS or Azure Data Studio. It creates the database <code>MyDatabase</code> with 4 tiny tables. Every example in the course uses these same tables, so you always know the data.</li>
+<li>Open a topic, read it, press <b>Next ▶</b> in the visuals to watch the rows move, then <b>run the example yourself</b>.</li>
+<li>Do the "Try it" boxes. Typing the query yourself is where the learning happens.</li>
+<li>Tick <b>Mark as completed</b> at the bottom of each topic (saved in your browser).</li>
+</ol></div>
+
+<h2>The sample database</h2>
+<p>Small on purpose: you can hold all the rows in your head, so you can predict each result before you run it. It also has deliberate "dirty" spots: a customer with no orders (Anna), an order for a customer that does not exist (1004), NULLs in names, scores and ship dates, and a product nobody bought (Socks).</p>
+<div class="tbl" data-src="customers"></div><div class="tbl" data-src="products"></div>
+<div class="tbl" data-src="employees" data-cols="EmployeeID,FirstName,LastName,Department,Salary,ManagerID"></div>
+<div class="tbl" data-src="orders"></div>
+
+<h2>Course map</h2>
+<div id="map"></div>
+
+<h2>Phase 2: your 120-question practice plan</h2>
+<p>Once you finish reading, we link this folder to your Git repository and add a <code>practice/</code> folder. My suggested structure (and a few upgrades to your plan):</p>
+<ul>
+<li><b>120 questions in 8 sets of 15</b>, each set with its own small dataset (retail, HR, banking, e-commerce, hospital, airline, school, SaaS subscriptions) so you do not only learn one schema. Banking and finance sets will feel familiar from your job.</li>
+<li><b>Difficulty ramp</b>: Set 1-2 filtering, joins and aggregates; Set 3-4 window functions and CTEs; Set 5-6 subqueries, recursion, gaps-and-islands, running totals, deduplication; Set 7-8 performance, indexing, execution plans, stored procedures, triggers.</li>
+<li><b>Every question</b> has: business story, tables, expected output, a hint (hidden until you ask), and your answer file <code>Q045.sql</code>. I review the file, add remarks in <code>Q045.review.md</code> (correctness, readability, performance, a better alternative) and commit.</li>
+<li><b>Extra ideas</b>: (1) "spot the bug" questions with broken queries; (2) 3 mini case-studies at the end, each combining 5+ concepts; (3) a weekly 10-minute recap of the questions you got wrong; (4) a progress table in the README that I update on each push; (5) a "bank-style" set (ledger, reconciliation, interest accrual, SCD2 history) because that is where your day job lives.</li>
+</ul>
+<p style="color:var(--muted);font-size:14px">Tip: one place to track your plan is the progress table I will generate in <code>README.md</code>.</p>
+</main>
+<script src="assets/course.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", () => {
+  const T = LearnSQL.TOC, F = LearnSQL.FLAT, names = {beg:"🟢 Beginner", int:"🟡 Intermediate", adv:"🔴 Advanced"};
+  let done = {}; try { done = JSON.parse(localStorage.getItem("learnsql.done")||"{}"); } catch(e){}
+  document.getElementById("map").innerHTML = T.map(([l,n,items]) =>
+    "<h3>"+names[l]+"</h3><div class='cards'>"+items.map(([f,t]) =>
+      "<a class='card' href='pages/"+f+".html'><small>Topic "+(F.findIndex(x=>x.f===f)+1)+(done[f]?" · ✓ done":"")+"</small><br><b>"+t+"</b></a>").join("")+"</div>").join("");
+});
+</script>
+</body></html>

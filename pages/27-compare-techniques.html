@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Compare advanced techniques</title><link rel="stylesheet" href="../assets/style.css"></head>
+<body data-page="27-compare-techniques"><main>
+<h1>Compare advanced techniques</h1>
+<p class="lead">Subquery, CTE, view, temp table, table variable and CTAS table: same goal, different trade-offs. Learn to pick.</p>
+<div class="goals"><b>After this topic you will</b> solve one question six ways, compare scope, storage and speed, and use a simple decision guide for real work.</div>
+
+<h2>One question, six solutions</h2>
+<p><em>"Customers whose total sales exceed 60, with their names."</em> Expected: Kevin 65, Mary 100, Mark 85.</p>
+<h3>1. Subquery (derived table)</h3>
+<pre class="sql">
+SELECT c.FirstName, t.Total
+FROM Customers c
+JOIN (SELECT CustomerID, SUM(Sales) AS Total FROM Orders GROUP BY CustomerID) t ON t.CustomerID = c.CustomerID
+WHERE t.Total &gt; 60;
+</pre>
+<h3>2. CTE</h3>
+<pre class="sql">
+WITH t AS (SELECT CustomerID, SUM(Sales) AS Total FROM Orders GROUP BY CustomerID)
+SELECT c.FirstName, t.Total FROM Customers c JOIN t ON t.CustomerID = c.CustomerID WHERE t.Total &gt; 60;
+</pre>
+<h3>3. View</h3>
+<pre class="sql">
+CREATE VIEW dbo.v_CustomerTotals AS SELECT CustomerID, SUM(Sales) AS Total FROM dbo.Orders GROUP BY CustomerID;
+GO
+SELECT c.FirstName, t.Total FROM Customers c JOIN dbo.v_CustomerTotals t ON t.CustomerID = c.CustomerID WHERE t.Total &gt; 60;
+</pre>
+<h3>4. Temp table</h3>
+<pre class="sql">
+SELECT CustomerID, SUM(Sales) AS Total INTO #t FROM Orders GROUP BY CustomerID;
+SELECT c.FirstName, t.Total FROM Customers c JOIN #t t ON t.CustomerID = c.CustomerID WHERE t.Total &gt; 60;
+</pre>
+<h3>5. Table variable</h3>
+<pre class="sql">
+DECLARE @t TABLE (CustomerID INT, Total DECIMAL(10,2));
+INSERT INTO @t SELECT CustomerID, SUM(Sales) FROM Orders GROUP BY CustomerID;
+SELECT c.FirstName, t.Total FROM Customers c JOIN @t t ON t.CustomerID = c.CustomerID WHERE t.Total &gt; 60;
+</pre>
+<h3>6. CTAS (permanent table)</h3>
+<pre class="sql">
+SELECT CustomerID, SUM(Sales) AS Total INTO dbo.CustomerTotals_Snapshot FROM Orders GROUP BY CustomerID;
+SELECT c.FirstName, t.Total FROM Customers c JOIN dbo.CustomerTotals_Snapshot t ON t.CustomerID = c.CustomerID WHERE t.Total &gt; 60;
+</pre>
+<p>All six give the same three rows. What differs is <b>what happens around them</b>:</p>
+
+<h2>Comparison table</h2>
+<div class="cmpwrap"><table class="cmp">
+<tr><th></th><th>Subquery</th><th>CTE</th><th>View</th><th>#Temp table</th><th>@Table var</th><th>CTAS table</th></tr>
+<tr><td><b>Stores data?</b></td><td>no</td><td>no</td><td>no (indexed view: yes)</td><td>yes (tempdb)</td><td>yes (tempdb/memory)</td><td>yes (database)</td></tr>
+<tr><td><b>Lifetime</b></td><td>that clause</td><td>that statement</td><td>until dropped</td><td>session</td><td>batch</td><td>until dropped</td></tr>
+<tr><td><b>Reuse in several statements</b></td><td>no</td><td>no</td><td>yes, everyone</td><td>yes</td><td>yes</td><td>yes, everyone</td></tr>
+<tr><td><b>Reuse several times in one statement</b></td><td>repeat the text</td><td>name it, but may be computed each time</td><td>yes (same caveat)</td><td>computed once</td><td>computed once</td><td>computed once</td></tr>
+<tr><td><b>Data is current?</b></td><td>always</td><td>always</td><td>always</td><td>snapshot</td><td>snapshot</td><td>snapshot (go stale)</td></tr>
+<tr><td><b>Can be indexed</b></td><td>no</td><td>no</td><td>only indexed view</td><td>yes</td><td>PK/UNIQUE only (inline)</td><td>yes</td></tr>
+<tr><td><b>Optimizer statistics</b></td><td>from base tables</td><td>from base tables</td><td>from base tables</td><td>yes</td><td>no (guessed 1 row, improved on 2019+)</td><td>yes</td></tr>
+<tr><td><b>Can be updated by you</b></td><td>no</td><td>only via base table</td><td>sometimes</td><td>yes</td><td>yes</td><td>yes</td></tr>
+<tr><td><b>Recursion</b></td><td>no</td><td><b>yes</b></td><td>no</td><td>no</td><td>no</td><td>no</td></tr>
+<tr><td><b>Security / sharing logic</b></td><td>none</td><td>none</td><td><b>best</b></td><td>none</td><td>none</td><td>table permissions</td></tr>
+<tr><td><b>Readability</b></td><td>nested: poor if deep</td><td><b>best</b></td><td>good</td><td>good (steps)</td><td>good</td><td>good</td></tr>
+</table></div>
+
+<h2>When to choose what</h2>
+<div class="viz" data-id="scope"></div>
+<table class="cmp">
+<tr><th>Situation</th><th>Pick</th><th>Why</th></tr>
+<tr><td>Small helper inside one query</td><td>Subquery</td><td>Simple, no names needed</td></tr>
+<tr><td>Multi-step logic you want to read top to bottom</td><td><b>CTE</b></td><td>Named layers, easy to debug one at a time</td></tr>
+<tr><td>Hierarchy or series of unknown depth</td><td><b>Recursive CTE</b></td><td>Only option without loops</td></tr>
+<tr><td>Same logic used by many reports/people, or hiding columns/rows</td><td><b>View</b></td><td>One definition, always fresh, permission boundary</td></tr>
+<tr><td>Heavy step reused several times in one script, big row counts</td><td><b>#Temp table</b> (+ index)</td><td>Computed once, has statistics, can be tuned</td></tr>
+<tr><td>A handful of rows, a short list in a procedure</td><td><b>@Table variable</b></td><td>Lightweight, no recompiles</td></tr>
+<tr><td>Frozen copy, backup or slow-to-compute reporting table</td><td><b>CTAS table</b></td><td>Persists; refresh on a schedule</td></tr>
+<tr><td>Expensive aggregate queried constantly, rarely changing base data</td><td><b>Indexed view</b> or summary table</td><td>Pre-computed answer</td></tr>
+</table>
+
+<h2>Rules of thumb</h2>
+<ol>
+<li><b>Start with a CTE.</b> If it is fast enough, stop.</li>
+<li>If the plan is slow and the same intermediate result is used more than once, or has hundreds of thousands of rows, <b>materialise it in a #temp table</b> and index it. Measure before and after.</li>
+<li>If other people or tools need the logic, <b>make it a view</b>.</li>
+<li>Do not stack views on views; flatten into one or the optimizer drowns.</li>
+<li>A snapshot is only as good as its refresh schedule. Name it with its date or load process.</li>
+<li>Whatever you choose, <b>check the execution plan</b> (topic 31) rather than guessing. CTE vs subquery is usually identical to the engine.</li>
+</ol>
+
+<h2>Common interview questions</h2>
+<details><summary>Is a CTE faster than a subquery?</summary><p>Usually no: in SQL Server a CTE is expanded like a subquery. It is a readability tool. Faster results come from indexes, set-based logic and sometimes temp tables.</p></details>
+<details><summary>Temp table or table variable?</summary><p>Temp table for large or reused sets (statistics, indexes). Table variable for small sets, in procedures with many executions where recompiles hurt. Neither "lives in memory only": both use tempdb.</p></details>
+<details><summary>View or stored procedure?</summary><p>View when the result should behave like a table (be joined, filtered by the caller). Procedure when you need parameters, multiple statements, transactions, or side effects (topic 28). A view cannot take parameters; an inline table-valued function can.</p></details>
+<details><summary>Can a view be slower than the raw query?</summary><p>Not by itself, but wide views joined with many tables get selected by queries needing only two columns, and the engine may still do all joins unless it can prove they are unnecessary. Create narrower views for narrower needs.</p></details>
+
+<div class="ex"><b>Try it</b>
+<p>Run solutions 1 to 5 on the sample data with <code>SET STATISTICS IO, TIME ON</code>, and compare the plans (Ctrl+L). With 10 rows all will look identical: that is the point. Then think about what would change with 10 million Orders.</p></div>
+</main>
+<script src="../assets/course.js"></script>
+<script>
+const rc = ["Object","Exists now?"];
+const rows = (v, c, t, tv, cta, d) => [["View (stored definition)", v], ["CTAS table (stored data)", cta], ["#temp table", t], ["@table variable", tv], ["CTE", c], ["Derived table (subquery)", d]];
+const Y = "yes", N = "gone";
+VIZ.scope = {
+  title: "Who exists when? (lifetime of each object)",
+  tables: [], result: { title: "Objects alive at this moment", cols: rc },
+  steps: [
+    { note: "<b>Start of the script.</b> The view and the CTAS table were created earlier and are permanent. Nothing temporary exists yet.", result: rows(Y, N, N, N, Y, N) },
+    { note: "<code>SELECT ... INTO #t</code> and <code>DECLARE @t TABLE</code> run. The temp table and the table variable now exist.", result: rows(Y, N, Y, Y, Y, N) },
+    { note: "<b>Statement A</b> uses <code>WITH c AS (...) SELECT ...</code> and a derived table <code>FROM (SELECT ...) d</code>: both exist <b>only while this one statement runs</b>.", result: rows(Y, Y, Y, Y, Y, Y) },
+    { note: "<b>Statement B</b> starts: the CTE and derived table are gone. If B needs them, you must write them again.", result: rows(Y, N, Y, Y, Y, N) },
+    { note: "<b>GO</b> ends the batch: the table variable disappears. The #temp table survives (it belongs to the session).", result: rows(Y, N, Y, N, Y, N) },
+    { note: "<b>Disconnect:</b> the #temp table is dropped automatically. Only the view and the CTAS table remain for everyone else.", result: rows(Y, N, N, N, Y, N) }
+  ]
+};
+</script>
+</body></html>

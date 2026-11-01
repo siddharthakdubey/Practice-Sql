@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Window functions: basics</title><link rel="stylesheet" href="../assets/style.css"></head>
+<body data-page="18-window-basics"><main>
+<h1>Window functions: basics</h1>
+<p class="lead">Calculate across related rows <em>without collapsing them</em>. The single most valuable SQL skill after joins.</p>
+<div class="goals"><b>After this topic you will</b> read and write <code>function() OVER (PARTITION BY ... ORDER BY ...)</code>, explain how it differs from GROUP BY, and know where window functions are allowed and when they run.</div>
+<div class="tbl" data-src="employees" data-cols="EmployeeID,FirstName,Department,Salary"></div>
+
+<h2>The problem GROUP BY cannot solve</h2>
+<p>"Show each employee and the total salary of their department next to them." With GROUP BY you get one row per department and lose the employees:</p>
+<pre class="sql">
+SELECT Department, SUM(Salary) AS DeptTotal
+FROM Employees
+GROUP BY Department;
+</pre>
+<div class="viz" data-id="gb"></div>
+<p>To keep the people you would need a self-join or subquery. A <b>window function</b> does it directly:</p>
+<pre class="sql">
+SELECT EmployeeID, FirstName, Department, Salary,
+       SUM(Salary) OVER (PARTITION BY Department) AS DeptTotal
+FROM Employees;
+</pre>
+<div class="viz" data-id="over"></div>
+
+<h2>Anatomy</h2>
+<pre class="sql">
+function_name(arguments) OVER (
+    PARTITION BY col1, col2     -- optional: split rows into independent groups ("windows")
+    ORDER BY     col3 DESC      -- optional/required: order inside each partition
+    ROWS BETWEEN ...            -- optional: which neighbouring rows to include (frame, topic 19)
+)
+</pre>
+<table class="cmp">
+<tr><th>Part</th><th>Meaning</th><th>If left out</th></tr>
+<tr><td><code>OVER</code></td><td>Marks this as a window function. Required.</td><td>it would be a plain aggregate</td></tr>
+<tr><td><code>PARTITION BY</code></td><td>Like GROUP BY, but rows are <b>not</b> collapsed. Each row sees only the rows of its own partition.</td><td>the whole result is one partition</td></tr>
+<tr><td><code>ORDER BY</code></td><td>Sorts rows <em>inside the window</em>: needed for ranking, LAG/LEAD, running totals. It does not sort your final output.</td><td>no order inside the window (every row sees the full partition)</td></tr>
+<tr><td>frame (<code>ROWS/RANGE</code>)</td><td>The slice of the partition around the current row</td><td>defaults depend on ORDER BY (topic 19)</td></tr>
+</table>
+
+<h2>Empty OVER(): the whole table is the window</h2>
+<pre class="sql">
+SELECT FirstName, Salary,
+       SUM(Salary) OVER ()                         AS CompanyTotal,    -- 340000 on every row
+       ROUND(100.0 * Salary / SUM(Salary) OVER (), 2) AS PctOfCompany
+FROM Employees;
+</pre>
+<div class="tbl" data-title="Result">
+FirstName | Salary | CompanyTotal | PctOfCompany
+Frank | 55000 | 340000 | 16.18
+Kevin | 65000 | 340000 | 19.12
+Mary | 75000 | 340000 | 22.06
+Michael | 90000 | 340000 | 26.47
+Carol | 55000 | 340000 | 16.18
+</div>
+<p>A "percent of total" with no subquery or join: this single idiom justifies learning windows.</p>
+
+<h2>GROUP BY and window together</h2>
+<p>The window runs <b>after</b> GROUP BY, on the grouped rows. So you can window over aggregates:</p>
+<pre class="sql">
+SELECT CustomerID,
+       SUM(Sales) AS Total,
+       RANK() OVER (ORDER BY SUM(Sales) DESC) AS Rnk     -- rank the per-customer totals
+FROM Orders
+GROUP BY CustomerID;
+</pre>
+<div class="tbl" data-title="Result">
+CustomerID | Total | Rnk
+6 | 90 | 1
+4 | 85 | 2
+2 | 65 | 3
+1 | 60 | 4
+3 | 60 | 4
+</div>
+<p>Customers 1 and 3 tie at 60, so both get rank 4 (RANK leaves ties; topic 20).</p>
+
+<h2>Rules and limits</h2>
+<ul>
+<li>Allowed only in <b>SELECT</b> and <b>ORDER BY</b>. <b>Not</b> in WHERE, GROUP BY or HAVING, because it runs after them. To filter on a window result, wrap it in a CTE or subquery:</li>
+</ul>
+<pre class="sql">
+WITH ranked AS (
+    SELECT FirstName, Department, Salary,
+           ROW_NUMBER() OVER (PARTITION BY Department ORDER BY Salary DESC) AS rn
+    FROM Employees
+)
+SELECT * FROM ranked WHERE rn = 1;        -- top earner per department
+</pre>
+<div class="tbl" data-title="Result">
+FirstName | Department | Salary | rn
+Kevin | Marketing | 65000 | 1
+Michael | Sales | 90000 | 1
+</div>
+<ul>
+<li>Window functions cannot be nested inside one another.</li>
+<li>Each window function has its own OVER clause. If several use the same one, SQL Server 2022 lets you name it once with a <code>WINDOW w AS (...)</code> clause; older versions repeat the text.</li>
+</ul>
+
+<h2>Execution order (why you can't filter on them)</h2>
+<p><code>FROM/JOIN → WHERE → GROUP BY → HAVING → <b>window functions</b> → SELECT/DISTINCT → ORDER BY → TOP</code>. Window functions see the rows <em>after</em> WHERE and GROUP BY have shrunk them. That is also why "rank only the Delivered orders" works by putting the filter in the same query's WHERE.</p>
+
+<h2>The four families (next topics)</h2>
+<table class="cmp">
+<tr><th>Family</th><th>Functions</th><th>Topic</th></tr>
+<tr><td>Aggregate</td><td>COUNT, SUM, AVG, MIN, MAX</td><td>19</td></tr>
+<tr><td>Ranking</td><td>ROW_NUMBER, RANK, DENSE_RANK, NTILE, PERCENT_RANK, CUME_DIST</td><td>20</td></tr>
+<tr><td>Value / analytic</td><td>LAG, LEAD, FIRST_VALUE, LAST_VALUE</td><td>21</td></tr>
+</table>
+
+<div class="ex"><b>Try it</b>
+<p>1) For each order show its Sales and the average Sales of the same customer. 2) Show each employee's salary as a percent of their <em>department</em> total. 3) Add a column with the highest salary in the department (<code>MAX(Salary) OVER (PARTITION BY Department)</code>) and compute each person's gap from it. 4) Try putting a window function in a WHERE clause and read the error.</p></div>
+</main>
+<script src="../assets/course.js"></script>
+<script>
+const e = pick(D.employees, ["EmployeeID","FirstName","Department","Salary"]);
+const cl = { 0: "b", 1: "b", 2: "p", 3: "p", 4: "p" };
+VIZ.gb = {
+  title: "GROUP BY: rows are collapsed",
+  tables: [e], result: { title: "Result", cols: ["Department","DeptTotal"] },
+  steps: [
+    { note: "Five employee rows." },
+    { note: "GROUP BY Department puts them into two buckets: Marketing (blue) and Sales (purple).", mark: { employees: cl } },
+    { note: "SUM per bucket. Marketing: 55000 + 65000 = 120000.", mark: { employees: { 0: "b", 1: "b" } }, add: [["Marketing", 120000]] },
+    { note: "Sales: 75000 + 90000 + 55000 = 220000.", mark: { employees: { 2: "p", 3: "p", 4: "p" } }, add: [["Sales", 220000]] },
+    { note: "<b>5 rows became 2.</b> The individual employees are gone from the output." }
+  ]
+};
+VIZ.over = {
+  title: "SUM() OVER (PARTITION BY Department): rows are kept",
+  tables: [e], result: { title: "Result", cols: ["EmployeeID","FirstName","Department","Salary","DeptTotal"] },
+  steps: [
+    { note: "Five employee rows." },
+    { note: "PARTITION BY Department splits them into two <b>windows</b>. Nothing is collapsed.", mark: { employees: cl } },
+    { note: "Marketing window total = 120000. It is written onto <b>each</b> Marketing row (Frank, Kevin).", mark: { employees: { 0: "b", 1: "b" } },
+      add: [[1,"Frank","Marketing",55000,120000],[2,"Kevin","Marketing",65000,120000]] },
+    { note: "Sales window total = 220000. It is written onto each of the three Sales rows.", mark: { employees: { 2: "p", 3: "p", 4: "p" } },
+      add: [[3,"Mary","Sales",75000,220000],[4,"Michael","Sales",90000,220000],[5,"Carol","Sales",55000,220000]] },
+    { note: "<b>5 rows in, 5 rows out</b>, plus a new column. Each row now carries a number computed from its neighbours." }
+  ]
+};
+</script>
+</body></html>

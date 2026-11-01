@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Advanced SQL techniques</title><link rel="stylesheet" href="../assets/style.css"></head>
+<body data-page="22-advanced-techniques"><main>
+<h1>Advanced SQL techniques</h1>
+<p class="lead">From single queries to well-structured SQL: build answers in layers, store them, reuse them, make them fast.</p>
+<div class="goals"><b>After this topic you will</b> see how the advanced topics fit together, know the "layered query" way of thinking, and have a checklist for writing readable, correct SQL for complex questions.</div>
+
+<h2>The big picture</h2>
+<p>A single SELECT can only do so much. Real questions ("which customers spent more than average in their first month, excluding refunds?") need several steps. The advanced toolbox gives you different ways to name and reuse those steps:</p>
+<div class="cmpwrap"><table class="cmp">
+<tr><th>Technique</th><th>What it is</th><th>Lives for</th><th>Topic</th></tr>
+<tr><td><b>Subquery</b></td><td>A query inside another query</td><td>That one statement</td><td>23</td></tr>
+<tr><td><b>CTE</b> (<code>WITH</code>)</td><td>A named subquery, read top to bottom; can be recursive</td><td>That one statement</td><td>24</td></tr>
+<tr><td><b>View</b></td><td>A saved query you use like a table</td><td>Permanent (definition only, no data stored)</td><td>25</td></tr>
+<tr><td><b>Temp table</b> / CTAS (<code>SELECT INTO</code>)</td><td>A real table holding intermediate or copied results</td><td>Session (temp) or permanent</td><td>26</td></tr>
+<tr><td><b>Stored procedure</b></td><td>A saved block of SQL with parameters and logic</td><td>Permanent</td><td>28</td></tr>
+<tr><td><b>Trigger</b></td><td>SQL that fires automatically on INSERT/UPDATE/DELETE</td><td>Permanent</td><td>29</td></tr>
+<tr><td><b>Index</b></td><td>A sorted lookup structure that speeds up reads</td><td>Permanent (stored)</td><td>30</td></tr>
+<tr><td><b>Execution plan</b></td><td>The engine's step-by-step strategy for your query</td><td>Per execution</td><td>31</td></tr>
+<tr><td><b>Partition</b></td><td>Splitting one large table into manageable pieces</td><td>Permanent</td><td>32</td></tr>
+</table></div>
+<p>Topic 27 compares the first group (when to pick subquery vs CTE vs view vs temp table). Topics 30 to 33 are about <b>performance</b>.</p>
+
+<h2>Think in layers</h2>
+<p>Do not try to write the final query in one go. Decompose the question into small steps, where each step is a table you can inspect, then stack them. Question: <em>"Which customers have more than 50 of delivered sales, and what are their names?"</em></p>
+<div class="viz" data-id="layers"></div>
+<pre class="sql">
+WITH delivered AS (                          -- layer 1: filter
+    SELECT CustomerID, Sales FROM Orders WHERE OrderStatus = 'Delivered'
+),
+per_customer AS (                            -- layer 2: summarise
+    SELECT CustomerID, SUM(Sales) AS Total FROM delivered GROUP BY CustomerID
+),
+big AS (                                     -- layer 3: filter the summary
+    SELECT * FROM per_customer WHERE Total &gt; 50
+)
+SELECT c.FirstName, b.Total                  -- layer 4: add names
+FROM big b JOIN Customers c ON c.CustomerID = b.CustomerID;
+</pre>
+<p>Each CTE can be run on its own (select from it) while debugging. This is how professionals write complex SQL: small, named, testable steps.</p>
+
+<h2>Checklist for any complex query</h2>
+<ol>
+<li><b>Grain</b>: what does one row of my result represent (one customer? one order? one customer-month?). Write it down.</li>
+<li><b>Sources</b>: which tables, and what is the key of each? Is any join one-to-many (fan-out risk)?</li>
+<li><b>Filters</b>: row filters first (WHERE), group filters later (HAVING), keep NULLs in mind.</li>
+<li><b>Layers</b>: aggregate at the right grain <em>before</em> joining to a table at a different grain.</li>
+<li><b>Verify</b>: sanity-check totals against a simple query (<code>SELECT SUM(Sales) FROM Orders</code>), row counts before and after each join, and edge cases (NULL, ties, empty groups).</li>
+<li><b>Then optimise</b>: read the execution plan, add or adjust indexes. Correct first, fast second.</li>
+</ol>
+
+<h2>Readable SQL style</h2>
+<pre class="sql">
+-- keywords upper case, one clause per line, commas leading or trailing consistently,
+-- aliases meaningful (c, o, p are fine for tiny queries; cust/ord for big ones)
+SELECT  c.CustomerID,
+        c.FirstName,
+        SUM(o.Sales) AS TotalSales
+FROM        Customers AS c
+INNER JOIN  Orders    AS o  ON o.CustomerID = c.CustomerID
+WHERE       o.OrderStatus = 'Delivered'
+GROUP BY    c.CustomerID, c.FirstName
+HAVING      SUM(o.Sales) &gt; 50
+ORDER BY    TotalSales DESC;
+</pre>
+<ul>
+<li>Comment the <em>why</em> ("excludes test accounts, per finance"), not the what.</li>
+<li>Never <code>SELECT *</code> in production code. Always qualify columns with an alias when more than one table is involved.</li>
+<li>Prefer explicit <code>JOIN ... ON</code> to old comma joins (<code>FROM a, b WHERE ...</code>).</li>
+<li>Put business rules (statuses, thresholds) in one place, not repeated ten times.</li>
+</ul>
+
+<h2>Where each technique shines</h2>
+<ul>
+<li><b>One-off analysis</b>: CTEs.</li>
+<li><b>Same logic used by many queries/people</b>: a view.</li>
+<li><b>Heavy intermediate result reused several times in one script</b>: a temp table (and index it).</li>
+<li><b>Business operation with steps, parameters and permissions</b>: stored procedure.</li>
+<li><b>Rule that must always happen, whatever application changes the data</b> (audit trail): trigger, used sparingly.</li>
+</ul>
+
+<div class="ex"><b>Try it</b>
+<p>Take the question "which products were bought by more than one different customer?". Write down its grain, then solve it in two layers: (1) distinct (ProductID, CustomerID) pairs, (2) count customers per product. Check against the Orders table by eye.</p></div>
+</main>
+<script src="../assets/course.js"></script>
+<script>
+const o = pick(D.orders, ["OrderID","CustomerID","OrderStatus","Sales"]);
+VIZ.layers = {
+  title: "A question answered in four layers",
+  tables: [o], result: { title: "Current layer", cols: ["CustomerID","Sales"] },
+  steps: [
+    { note: "Question: customers with more than 50 of <b>delivered</b> sales, with names. We start from all 10 orders." },
+    { note: "<b>Layer 1, delivered:</b> keep only Delivered orders (6 rows, green).", mark: { orders: {0:"g",1:"r",2:"g",3:"r",4:"g",5:"g",6:"r",7:"g",8:"r",9:"g"} },
+      rcols: ["CustomerID","Sales"], result: [[2,20],[1,10],[4,40],[2,25],[1,50],[4,45]] },
+    { note: "<b>Layer 2, per_customer:</b> GROUP BY customer and SUM. 1: 10+50 = 60, 2: 20+25 = 45, 4: 40+45 = 85.", rcols: ["CustomerID","Total"], result: [[1,60],[2,45],[4,85]] },
+    { note: "<b>Layer 3, big:</b> keep Total &gt; 50. Customer 2 (45) drops out.", rcols: ["CustomerID","Total"], result: [[1,60],[4,85]] },
+    { note: "<b>Layer 4, join names:</b> join Customers on CustomerID. Final answer.", rcols: ["FirstName","Total"], result: [["Jossef",60],["Mark",85]] }
+  ]
+};
+</script>
+</body></html>

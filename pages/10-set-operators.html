@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Set operators</title><link rel="stylesheet" href="../assets/style.css"></head>
+<body data-page="10-set-operators"><main>
+<h1>Set operators</h1>
+<p class="lead">Joins add <em>columns</em> side by side. Set operators stack <em>rows</em> on top of each other: UNION, UNION ALL, EXCEPT, INTERSECT.</p>
+<div class="goals"><b>After this topic you will</b> know the four set operators, the rules the two queries must follow, when UNION ALL beats UNION, and how to use EXCEPT/INTERSECT for comparing data sets.</div>
+
+<h2>Join vs set operator</h2>
+<table class="cmp">
+<tr><th>JOIN</th><th>Set operator</th></tr>
+<tr><td>Combines tables <b>horizontally</b> (more columns), matching rows by a key</td><td>Combines results <b>vertically</b> (more rows), matching whole rows</td></tr>
+<tr><td><code>Customers + Orders</code> on CustomerID</td><td><code>Customers</code> rows <b>+</b> <code>Employees</code> rows</td></tr>
+</table>
+
+<h2>The rules (all four operators)</h2>
+<ol>
+<li>Both queries return the <b>same number of columns</b>.</li>
+<li>Columns are matched <b>by position</b>, not by name, and their <b>data types must be compatible</b>.</li>
+<li>The <b>column names come from the first query</b>.</li>
+<li><code>ORDER BY</code> is allowed only <b>once, at the very end</b>, and applies to the combined result.</li>
+<li>Each side can have its own <code>WHERE</code>, <code>GROUP BY</code>, joins...</li>
+</ol>
+<div class="tbl" data-src="customers" data-cols="CustomerID,FirstName,Country"></div>
+<div class="tbl" data-src="employees" data-cols="EmployeeID,FirstName,Department"></div>
+<p>We will work with the first names: Customers = {Jossef, Kevin, Mary, Mark, Anna}; Employees = {Frank, Kevin, Mary, Michael, Carol}. Kevin and Mary appear in both.</p>
+
+<h2>UNION ALL: just stack them</h2>
+<pre class="sql">
+SELECT FirstName FROM Customers
+UNION ALL
+SELECT FirstName FROM Employees;
+</pre>
+<div class="viz" data-id="unionall"></div>
+<p>10 rows (5 + 5), duplicates kept. <b>Fastest</b>: no extra work.</p>
+
+<h2>UNION: stack, then remove duplicates</h2>
+<pre class="sql">
+SELECT FirstName FROM Customers
+UNION
+SELECT FirstName FROM Employees;
+</pre>
+<div class="viz" data-id="union"></div>
+<div class="callout tip"><b>Default to UNION ALL</b>UNION must sort or hash everything to find duplicates (slow on big data) and it also removes duplicates <em>inside</em> each side that you may want to keep. Use UNION only when you really need distinct rows. If you know the sets cannot overlap (e.g. 2024 table + 2025 table), UNION ALL is both right and faster.</div>
+
+<h2>EXCEPT: in the first, not in the second</h2>
+<pre class="sql">
+SELECT FirstName FROM Customers
+EXCEPT
+SELECT FirstName FROM Employees;
+</pre>
+<div class="viz" data-id="except"></div>
+<p>Order matters: <code>A EXCEPT B</code> is not <code>B EXCEPT A</code>. Oracle calls this <code>MINUS</code>. EXCEPT also removes duplicates in its result.</p>
+
+<h2>INTERSECT: in both</h2>
+<pre class="sql">
+SELECT FirstName FROM Customers
+INTERSECT
+SELECT FirstName FROM Employees;
+</pre>
+<div class="viz" data-id="intersect"></div>
+
+<h2>Summary</h2>
+<table class="cmp">
+<tr><th>Operator</th><th>Result</th><th>Duplicates</th><th>Customers vs Employees names</th></tr>
+<tr><td>UNION ALL</td><td>A + B</td><td>kept</td><td>10 rows</td></tr>
+<tr><td>UNION</td><td>A + B</td><td>removed</td><td>8 rows</td></tr>
+<tr><td>EXCEPT</td><td>A rows not in B</td><td>removed</td><td>Jossef, Mark, Anna</td></tr>
+<tr><td>INTERSECT</td><td>rows in both</td><td>removed</td><td>Kevin, Mary</td></tr>
+</table>
+<div class="callout note"><b>NULL in set operators</b>Unlike <code>=</code>, set operators treat two NULLs as <em>equal</em> when comparing rows. So <code>(NULL)</code> in both inputs is a "match" for INTERSECT and a duplicate for UNION.</div>
+
+<h2>Real-life uses</h2>
+<ul>
+<li><b>Combine similar tables</b>: <code>Orders_2024 UNION ALL Orders_2025</code> (and add a column saying which source).</li>
+<li><b>Data migration check</b>: <code>SELECT * FROM Old EXCEPT SELECT * FROM New</code> returns rows that failed to migrate. Run it both ways.</li>
+<li><b>Stack different shapes</b>: add a static label column so you know where each row came from:</li>
+</ul>
+<pre class="sql">
+SELECT 'Customer' AS Source, FirstName, LastName FROM Customers
+UNION ALL
+SELECT 'Employee',           FirstName, LastName FROM Employees
+ORDER BY Source, FirstName;           -- ORDER BY only once, at the end
+</pre>
+<ul>
+<li><b>Report with subtotals</b>: UNION ALL a detail query and a total query.</li>
+</ul>
+
+<div class="ex"><b>Try it</b>
+<p>1) Which last names appear in both Customers and Employees (Brown)? 2) Add a third query to the UNION ALL above using Products (give it the same number of columns, e.g. NULL for LastName). 3) Make the column counts differ and read the error. 4) Swap the two sides of the EXCEPT and compare the result.</p></div>
+</main>
+<script src="../assets/course.js"></script>
+<script>
+const A = { id: "a", title: "Customers.FirstName (A)", cols: ["FirstName"], rows: [["Jossef"],["Kevin"],["Mary"],["Mark"],["Anna"]] };
+const B = { id: "b", title: "Employees.FirstName (B)", cols: ["FirstName"], rows: [["Frank"],["Kevin"],["Mary"],["Michael"],["Carol"]] };
+const inB = v => B.rows.findIndex(r => r[0] === v);
+function stack(title, query, dedupe) {
+  const steps = [
+    { note: "Query A returns 5 rows.", mark: { a: {0:"b",1:"b",2:"b",3:"b",4:"b"} }, add: A.rows },
+    { note: "Query B returns 5 rows, appended below A.", mark: { b: {0:"p",1:"p",2:"p",3:"p",4:"p"} }, add: B.rows }
+  ];
+  if (dedupe) steps.push({ note: "UNION now removes duplicate rows: <b>Kevin</b> and <b>Mary</b> each appeared twice and are kept once. 10 rows become 8.",
+    mark: { a: {1:"y",2:"y"}, b: {1:"y",2:"y"} }, result: [["Jossef"],["Kevin"],["Mary"],["Mark"],["Anna"],["Frank"],["Michael"],["Carol"]] });
+  return { title, query, tables: [A, B], result: { title: "Result", cols: ["FirstName"] }, steps };
+}
+function compare(title, query, keepIfFound) {
+  const steps = [{ note: "Go through each row of A and ask: <b>does it also exist in B?</b>" }];
+  A.rows.forEach((r, i) => {
+    const j = inB(r[0]), found = j >= 0, keep = found === keepIfFound;
+    const mk = { a: {}, b: {} }; mk.a[i] = keep ? "g" : "r"; if (found) mk.b[j] = "y";
+    steps.push({ note: "<b>" + r[0] + "</b>: " + (found ? "found in B" : "not in B") + " &rarr; " + (keep ? "<b>kept</b>." : "dropped."), mark: mk, add: keep ? [[r[0]]] : [] });
+  });
+  return { title, query, tables: [A, B], result: { title: "Result", cols: ["FirstName"] }, steps };
+}
+VIZ.unionall = stack("UNION ALL", "A UNION ALL B", false);
+VIZ.union = stack("UNION", "A UNION B", true);
+VIZ.except = compare("EXCEPT: A rows that are NOT in B", "A EXCEPT B", false);
+VIZ.intersect = compare("INTERSECT: A rows that ARE in B", "A INTERSECT B", true);
+</script>
+</body></html>

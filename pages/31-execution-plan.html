@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Execution plan</title><link rel="stylesheet" href="../assets/style.css"></head>
+<body data-page="31-execution-plan"><main>
+<h1>Execution plan</h1>
+<p class="lead">The engine's step-by-step recipe for your query. Learn to read it, and you can see <em>why</em> a query is slow instead of guessing.</p>
+<div class="goals"><b>After this topic you will</b> open estimated and actual plans, read operators and arrows, tell scan from seek, know the three join algorithms (nested loops, hash, merge), spot red flags (key lookups, spills, bad estimates, implicit conversions) and use <code>SET STATISTICS IO/TIME</code>.</div>
+
+<h2>What it is</h2>
+<p>SQL is declarative: you say <em>what</em>. The <b>optimizer</b> compares many possible strategies using row-count <b>statistics</b> and picks the cheapest. The result is the <b>execution plan</b>: a tree of <b>operators</b>, each taking rows in and passing rows out (just like the "pipeline of tables" from topic 1).</p>
+
+<h2>How to see it in SSMS</h2>
+<table class="cmp">
+<tr><th>Plan</th><th>How</th><th>Query runs?</th><th>Shows</th></tr>
+<tr><td><b>Estimated</b></td><td>Ctrl+L</td><td>no</td><td>what the optimizer <em>expects</em></td></tr>
+<tr><td><b>Actual</b></td><td>Ctrl+M (Include Actual Plan), then run</td><td>yes</td><td>estimates <b>and</b> real row counts, warnings</td></tr>
+<tr><td>Text</td><td><code>SET SHOWPLAN_TEXT ON</code></td><td>no</td><td>plain text version</td></tr>
+</table>
+<pre class="sql">
+SET STATISTICS IO ON;      -- logical/physical page reads per table
+SET STATISTICS TIME ON;    -- CPU and elapsed milliseconds
+
+SELECT c.FirstName, SUM(o.Sales) AS Total
+FROM   Customers c JOIN Orders o ON o.CustomerID = c.CustomerID
+WHERE  o.OrderStatus = 'Delivered'
+GROUP BY c.FirstName;
+</pre>
+<p>In the Messages tab you get e.g. <code>Table 'Orders'. Scan count 1, logical reads 2</code>. <b>Logical reads</b> (8 KB pages touched) is the most reliable metric for comparing two versions of a query: it does not depend on caching or other users.</p>
+
+<h2>Reading a plan</h2>
+<ul>
+<li>Read <b>right to left</b> and top to bottom: data flows from the right-hand leaf operators (table access) to the left, ending at <code>SELECT</code>.</li>
+<li><b>Arrow thickness</b> = number of rows passed. A fat arrow early followed by a filter late means work was wasted.</li>
+<li><b>Cost %</b> on each operator is its share of the estimated total. Start with the most expensive one.</li>
+<li>Hover an operator: estimated vs actual rows, I/O, CPU, which index, predicate used.</li>
+<li><b>Yellow triangle</b> = warning (spill, missing statistics, implicit conversion). <b>Green text</b> at the top = missing index suggestion.</li>
+</ul>
+<p>The same plan for the query above, drawn as a tree (right to left it flows upwards):</p>
+<pre><code>SELECT
+  └─ Hash Match (Aggregate)                      GROUP BY FirstName / SUM
+       └─ Hash Match (Inner Join)                join Customers + Orders
+            ├─ Clustered Index Scan (Customers)  5 rows
+            └─ Clustered Index Scan (Orders)     filter OrderStatus = 'Delivered'  -> 6 of 10 rows</code></pre>
+
+<h2>Common operators</h2>
+<div class="cmpwrap"><table class="cmp">
+<tr><th>Operator</th><th>Meaning</th><th>Verdict</th></tr>
+<tr><td>Table Scan / Clustered Index Scan</td><td>reads all rows of the table</td><td>fine for small tables or when most rows are needed; a red flag on a big table with a selective filter</td></tr>
+<tr><td>Index Seek (Clustered / Nonclustered)</td><td>B-tree navigation to specific keys</td><td>usually what you want</td></tr>
+<tr><td>Index Scan (Nonclustered)</td><td>reads the entire index</td><td>cheaper than table scan if it covers the query</td></tr>
+<tr><td>Key Lookup / RID Lookup</td><td>per row, fetch extra columns from the table</td><td>fine for 10 rows, terrible for 100 000: add <code>INCLUDE</code> columns</td></tr>
+<tr><td>Nested Loops</td><td>join: for each outer row, look up inner</td><td>great when the outer input is small and the inner side has an index</td></tr>
+<tr><td>Hash Match</td><td>join/aggregate using a hash table</td><td>good for large, unsorted inputs; uses memory</td></tr>
+<tr><td>Merge Join</td><td>joins two inputs already sorted on the key</td><td>very efficient on big sorted inputs (e.g. clustered keys)</td></tr>
+<tr><td>Sort</td><td>orders rows</td><td>expensive (memory, may spill to disk); avoid by indexing ORDER BY / PARTITION BY columns</td></tr>
+<tr><td>Stream Aggregate / Hash Aggregate</td><td>GROUP BY / aggregate (needs sorted / unsorted input)</td><td>normal</td></tr>
+<tr><td>Filter</td><td>discards rows by a predicate</td><td>a late Filter suggests the predicate could be pushed down</td></tr>
+<tr><td>Compute Scalar</td><td>calculates an expression</td><td>cheap</td></tr>
+<tr><td>Parallelism (Gather/Repartition Streams)</td><td>splits work across CPUs</td><td>normal for big queries</td></tr>
+</table></div>
+
+<h2>The three join algorithms, visualised</h2>
+<h3>1. Nested loops</h3>
+<p>For each row of the outer input, find the matching rows in the inner input (ideally with an index seek). It is exactly the row-by-row picture from topics 8 and 9:</p>
+<div class="viz" data-id="nl"></div>
+<h3>2. Hash join</h3>
+<p><b>Build</b>: read the smaller input and put each row into a hash table by its key. <b>Probe</b>: read the other input once; for every row hash its key, jump to one bucket, compare there. No sorting, no index needed.</p>
+<div class="viz" data-id="hash"></div>
+<h3>3. Merge join</h3>
+<p>Both inputs sorted by the join key. Walk through them side by side with two pointers, like zipping: advance the pointer with the smaller key; when keys are equal, output the match. One pass over each input, almost no memory. Needs sorted data (from an index, or a Sort operator which adds cost).</p>
+<table class="cmp">
+<tr><th></th><th>Nested loops</th><th>Hash match</th><th>Merge join</th></tr>
+<tr><td>Best when</td><td>one small input, index on the other</td><td>large unsorted inputs</td><td>large inputs already sorted</td></tr>
+<tr><td>Memory</td><td>low</td><td>high (hash table; can spill)</td><td>low</td></tr>
+<tr><td>Needs index/sort</td><td>index on inner side</td><td>no</td><td>sorted input</td></tr>
+<tr><td>Worst case</td><td>big outer &times; unindexed inner</td><td>spilling to tempdb</td><td>extra Sort</td></tr>
+</table>
+
+<h2>Red flags and what to do</h2>
+<table class="cmp">
+<tr><th>You see</th><th>Likely cause</th><th>Try</th></tr>
+<tr><td>Table/Clustered Index Scan on a big table with a selective WHERE</td><td>no usable index, or non-sargable filter</td><td>add an index on the filter columns; rewrite <code>YEAR(col)=...</code> style filters (topic 30)</td></tr>
+<tr><td>Key Lookup with many rows</td><td>index does not cover the query</td><td><code>INCLUDE</code> the selected columns, or select fewer columns</td></tr>
+<tr><td><b>Estimated rows &asymp; 1, actual rows 500 000</b></td><td>stale statistics, or table variable, or complex predicate</td><td><code>UPDATE STATISTICS</code>; use a #temp table; simplify the predicate</td></tr>
+<tr><td>Yellow warning: "Type conversion in expression may affect cardinality estimate"</td><td>implicit conversion (e.g. comparing VARCHAR column to NVARCHAR parameter, or text to int)</td><td>match the data types</td></tr>
+<tr><td>Sort / Hash with spill warning</td><td>memory grant too small, spilled to tempdb</td><td>reduce rows earlier, index to avoid sort, update statistics</td></tr>
+<tr><td>Same table accessed many times</td><td>repeated subqueries or self-joins</td><td>one pass with a window function or CTE/temp table</td></tr>
+<tr><td>Huge Nested Loops with millions of executions</td><td>bad join choice from bad estimates</td><td>fix statistics; consider a join hint only as last resort</td></tr>
+</table>
+
+<h2>A tuning routine</h2>
+<ol>
+<li>Capture the <b>actual</b> plan and <code>STATISTICS IO</code> for a baseline.</li>
+<li>Find the costliest operator; compare <b>estimated vs actual rows</b> around it.</li>
+<li>Make <b>one</b> change (index, rewrite, statistics) and measure again: logical reads before and after.</li>
+<li>Check it still returns the <b>same result</b> (EXCEPT both versions: topic 10).</li>
+<li>Test on realistic data volume. A plan on 10 rows tells you nothing about 10 million.</li>
+</ol>
+<div class="callout note"><b>Other tools</b>Query Store (history of plans and regressions), Activity Monitor, <code>sys.dm_exec_query_stats</code>, and Extended Events. The same idea in other engines: <code>EXPLAIN ANALYZE</code> in PostgreSQL, <code>EXPLAIN</code> in MySQL.</div>
+
+<div class="ex"><b>Try it</b>
+<p>1) Turn on the actual plan and run <code>SELECT * FROM Orders WHERE OrderID = 1005</code>, then <code>WHERE Sales = 40</code>. Compare Seek vs Scan. 2) Run the join query above with <code>OPTION (HASH JOIN)</code>, <code>OPTION (LOOP JOIN)</code> and <code>OPTION (MERGE JOIN)</code> and compare the plans (for learning only). 3) Write the same query as a subquery and as a join and confirm the plans are identical. 4) Compare <code>STATISTICS IO</code> for <code>WHERE YEAR(OrderDate)=2025</code> and the sargable range version.</p></div>
+</main>
+<script src="../assets/course.js"></script>
+<script>
+const L = pick(D.customers, ["CustomerID","FirstName"], "Customers (outer input)");
+const R = pick(D.orders, ["OrderID","CustomerID","Sales"], "Orders (inner input, indexed on CustomerID)");
+VIZ.nl = joinSpec({ title: "Nested loops: for each customer, seek its orders", query: "Nested Loops (Inner Join)\n  outer: Customers   inner: Index Seek on Orders.CustomerID",
+  L, R, lk: 0, rk: 1, type: "inner", cols: ["FirstName","OrderID","Sales"], out: (l, r) => [l[1], r[0], r[2]], lname: "Customers", rname: "Orders" });
+
+const cust = D.customers.rows.map(r => [r[0], r[1]]);
+const H = { id: "h", title: "Hash table built from Customers (bucket = CustomerID mod 3)", cols: ["Bucket","Entries (key, name)"], rows: [] };
+const buckets = [[], [], []]; cust.forEach(c => buckets[c[0] % 3].push(c));
+H.rows = buckets.map((b, i) => [i, b.map(c => c[0] + " " + c[1]).join(", ")]);
+const C2 = { id: "c", title: "Customers (build input: the smaller one)", cols: ["CustomerID","FirstName"], rows: cust };
+const O2 = pick(D.orders, ["OrderID","CustomerID","Sales"]);
+O2.title = "Orders (probe input)";
+const hsteps = [
+  { note: "<b>Build phase:</b> read every Customers row and drop it into the bucket given by hash(CustomerID). Five rows, three buckets.", mark: { c: {0:"b",1:"p",2:"o",3:"b",4:"p"} } },
+  { note: "<b>Probe phase:</b> now read Orders <b>once</b>. For each order, hash its CustomerID, go straight to one bucket and compare keys inside it." }
+];
+O2.rows.forEach((r, i) => {
+  const b = r[1] % 3, hit = cust.find(c => c[0] === r[1]);
+  hsteps.push({ note: "Order <b>" + r[0] + "</b> (customer " + r[1] + "): bucket " + r[1] + " mod 3 = <b>" + b + "</b>. " + (hit ? "Bucket " + b + " holds key " + r[1] + " (" + hit[1] + "): <b>match</b>." : "Bucket " + b + " contains " + (buckets[b].map(c => c[0]).join(" and ") || "nothing") + ", none equal to " + r[1] + ": <b>no match</b> (inner join drops it)."),
+    mark: { o: { [i]: hit ? "g" : "r" }, h: { [b]: hit ? "g" : "r" } }, add: hit ? [[r[0], hit[1], r[2]]] : [] });
+});
+O2.id = "o";
+VIZ.hash = { title: "Hash join: build a hash table, then probe it", query: "Hash Match (Inner Join)", tables: [C2, H, O2],
+  result: { title: "Result", cols: ["OrderID","FirstName","Sales"] }, steps: hsteps };
+</script>
+</body></html>

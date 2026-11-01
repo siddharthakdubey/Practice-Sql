@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Indexes</title><link rel="stylesheet" href="../assets/style.css"></head>
+<body data-page="30-indexes"><main>
+<h1>Indexes</h1>
+<p class="lead">The book-index of a table: a sorted structure that lets SQL Server jump straight to the rows instead of reading everything.</p>
+<div class="goals"><b>After this topic you will</b> explain clustered vs nonclustered indexes, B-trees, seek vs scan vs key lookup, design composite and covering indexes, write sargable filters, and weigh the cost of indexes on writes.</div>
+
+<h2>The idea</h2>
+<p>Without an index, to find the orders of customer 3 the engine reads <b>every row</b> (a <b>scan</b>). With an index on <code>CustomerID</code> it jumps to the right place in a sorted list (a <b>seek</b>), like using the index at the back of a book instead of reading every page.</p>
+<div class="viz" data-id="scan"></div>
+<div class="viz" data-id="seek"></div>
+<p>With 10 rows nobody notices. With 100 million rows, the difference is milliseconds against minutes.</p>
+
+<h2>How it is stored: the B-tree</h2>
+<p>SQL Server stores tables and indexes in 8 KB <b>pages</b>. An index is a balanced tree of pages (<b>B-tree</b>):</p>
+<pre><code>                 [ Root page ]           1 read     "keys below 4 go left, 4 and above right"
+                /             \
+        [ Intermediate ]   [ Intermediate ]       1 read each level
+           /     \             /     \
+     [Leaf]   [Leaf]      [Leaf]   [Leaf]         leaf pages hold the sorted keys (and pointers or the data)</code></pre>
+<p>Even a table of a billion rows is typically only <b>3 to 4 levels deep</b>: a seek reads 3 to 4 pages. A scan reads millions.</p>
+
+<h2>Clustered index: the table itself, sorted</h2>
+<ul>
+<li>The <b>leaf level is the data</b>. Rows are physically ordered by the clustering key.</li>
+<li>Only <b>one per table</b> (data can be in one order).</li>
+<li>A <code>PRIMARY KEY</code> creates a clustered index by default. A table with no clustered index is a <b>heap</b> (unordered).</li>
+<li>Good key: <b>narrow, unique, ever-increasing, rarely changed</b> (an IDENTITY int). A random GUID causes page splits and fragmentation.</li>
+</ul>
+<h2>Nonclustered index: a separate lookup structure</h2>
+<ul>
+<li>Leaf holds the <b>index columns</b> + a pointer to the row (the clustering key, or a row id for a heap).</li>
+<li>Up to 999 per table, but each one costs space and write time.</li>
+<li>Finding extra columns not in the index requires a <b>key lookup</b>: one extra seek into the clustered index per row.</li>
+</ul>
+<pre class="sql">
+CREATE NONCLUSTERED INDEX ix_Orders_CustomerID ON dbo.Orders (CustomerID);
+CREATE UNIQUE INDEX      ux_Customers_Name    ON dbo.Customers (FirstName, LastName);   -- also enforces uniqueness
+CREATE CLUSTERED INDEX   cx_X ON dbo.SomeHeap (Id);
+DROP INDEX ix_Orders_CustomerID ON dbo.Orders;
+</pre>
+
+<h2>Which operation does the engine use?</h2>
+<table class="cmp">
+<tr><th>Operation</th><th>Meaning</th><th>Cost</th></tr>
+<tr><td><b>Clustered Index Scan / Table Scan</b></td><td>read the whole table</td><td>proportional to table size</td></tr>
+<tr><td><b>Index Seek</b></td><td>navigate the tree to the matching key(s)</td><td>tiny (levels + matching rows)</td></tr>
+<tr><td><b>Index Scan</b></td><td>read all of an index (smaller than the table)</td><td>middle</td></tr>
+<tr><td><b>Key Lookup (RID lookup)</b></td><td>for each seek hit, fetch missing columns from the table</td><td>fine for few rows, painful for thousands</td></tr>
+</table>
+<p>A seek is not always better: if you need 40% of the table, scanning is cheaper than 40% of the rows as random lookups. The optimizer decides using <b>statistics</b> on value distribution.</p>
+
+<h2>Composite (multi-column) indexes: order matters</h2>
+<pre class="sql">
+CREATE INDEX ix_Orders_Cust_Date ON dbo.Orders (CustomerID, OrderDate);
+</pre>
+<p>Like a phone book sorted by <em>last name, then first name</em>. It helps queries that filter on the <b>left-most columns</b>:</p>
+<table class="cmp">
+<tr><th>Query filter</th><th>Uses the index well?</th></tr>
+<tr><td><code>WHERE CustomerID = 2</code></td><td>yes (seek on first column)</td></tr>
+<tr><td><code>WHERE CustomerID = 2 AND OrderDate &gt;= '2025-02-01'</code></td><td>yes (seek on both)</td></tr>
+<tr><td><code>WHERE OrderDate &gt;= '2025-02-01'</code></td><td><b>no</b> (second column alone: like finding all "Anna"s in a phone book sorted by surname)</td></tr>
+<tr><td><code>WHERE CustomerID = 2 ORDER BY OrderDate</code></td><td>yes, and no sort needed: data already in order</td></tr>
+</table>
+<p><b>Rule of thumb for column order:</b> equality columns first, then the range/sort column; the most selective (fewest matching rows) first when everything is equality.</p>
+
+<h2>Covering indexes and INCLUDE</h2>
+<p>If every column a query needs is inside the index, no key lookup is needed: the index <em>covers</em> the query.</p>
+<pre class="sql">
+CREATE INDEX ix_Orders_Cust_Covering
+ON dbo.Orders (CustomerID)                 -- key: used for searching / sorting
+INCLUDE (OrderDate, Sales);                -- payload: stored in the leaf only, not sorted
+
+SELECT OrderDate, Sales FROM Orders WHERE CustomerID = 3;     -- answered entirely from the index
+</pre>
+
+<h2>Filtered and other index types</h2>
+<table class="cmp">
+<tr><th>Type</th><th>Idea</th><th>Use</th></tr>
+<tr><td>Filtered</td><td><code>... WHERE ShipDate IS NULL</code>: indexes only some rows</td><td>"open items" queries; small and fast</td></tr>
+<tr><td>Unique</td><td>enforces no duplicates</td><td>natural keys, email</td></tr>
+<tr><td>Columnstore</td><td>stores data by column, compressed</td><td>analytics and data warehouses (aggregates over millions of rows)</td></tr>
+<tr><td>Full-text</td><td>word search in text</td><td>search boxes (not <code>LIKE '%word%'</code>)</td></tr>
+</table>
+
+<h2>Sargable: write filters the index can use</h2>
+<p><b>S</b>earch <b>ARG</b>ument <b>able</b>: the engine can seek if the indexed column stands alone on one side of the comparison.</p>
+<table class="cmp">
+<tr><th>Bad (scan)</th><th>Good (seek)</th></tr>
+<tr><td><code>WHERE YEAR(OrderDate) = 2025</code></td><td><code>WHERE OrderDate &gt;= '2025-01-01' AND OrderDate &lt; '2026-01-01'</code></td></tr>
+<tr><td><code>WHERE UPPER(FirstName) = 'KEVIN'</code></td><td><code>WHERE FirstName = 'Kevin'</code> (default collation is case-insensitive)</td></tr>
+<tr><td><code>WHERE Sales * 1.18 &gt; 100</code></td><td><code>WHERE Sales &gt; 100 / 1.18</code></td></tr>
+<tr><td><code>WHERE FirstName LIKE '%vin'</code></td><td><code>WHERE FirstName LIKE 'Ke%'</code> (leading wildcard kills it)</td></tr>
+<tr><td><code>WHERE CustomerID = '3'</code> (text vs int: implicit conversion)</td><td><code>WHERE CustomerID = 3</code> (same type)</td></tr>
+<tr><td><code>WHERE ISNULL(ShipDate, '1900-01-01') = '1900-01-01'</code></td><td><code>WHERE ShipDate IS NULL</code></td></tr>
+</table>
+
+<h2>The price of an index</h2>
+<ul>
+<li><b>Writes slow down</b>: every INSERT/UPDATE/DELETE must also update every index on the table.</li>
+<li><b>Storage</b>: each index is another copy of some columns.</li>
+<li><b>Maintenance</b>: indexes fragment as data changes. Rebuild or reorganise when it matters: <code>ALTER INDEX ALL ON dbo.Orders REBUILD;</code> (or <code>REORGANIZE</code>), and keep statistics fresh (<code>UPDATE STATISTICS</code>).</li>
+</ul>
+<div class="callout key"><b>Balance</b>Read-heavy reporting tables like many indexes; write-heavy transaction tables (payments, logs) like few. Index what you <em>filter, join, group and order by</em>: foreign key columns, frequent WHERE columns. Do not index low-selectivity columns alone (a bit flag), tiny tables, or columns that are rarely used. Drop unused and duplicate indexes.</div>
+
+<h2>Find what is needed</h2>
+<pre class="sql">
+SELECT * FROM sys.dm_db_missing_index_details;                   -- what the optimizer wished existed
+SELECT OBJECT_NAME(object_id) AS t, name, user_seeks, user_scans, user_updates
+FROM sys.indexes i JOIN sys.dm_db_index_usage_stats s ON s.object_id = i.object_id AND s.index_id = i.index_id;   -- used vs only maintained
+</pre>
+<p>Treat missing-index suggestions as hints, not orders: merge overlapping ones and test them. The execution plan (topic 31) shows what an index really does for your query.</p>
+
+<div class="ex"><b>Try it</b>
+<p>1) Run <code>SET STATISTICS IO ON; SELECT * FROM Orders WHERE CustomerID = 3;</code> then create <code>ix_Orders_CustomerID</code> and run again. (With 10 rows the optimizer may still scan: the whole table is one page! Load more rows to see the difference, e.g. insert 100 000 generated orders with a recursive CTE or a cross join.) 2) Make the query covered with INCLUDE and watch the key lookup disappear from the plan. 3) Write the sargable version of <code>WHERE MONTH(OrderDate) = 2</code>. 4) Reverse the column order of the composite index and re-test the queries from the table above.</p></div>
+</main>
+<script src="../assets/course.js"></script>
+<script>
+const o = pick(D.orders, ["OrderID","CustomerID","Sales"]);
+VIZ.scan = {
+  title: "WITHOUT an index: SELECT * FROM Orders WHERE CustomerID = 3 (full scan)",
+  tables: [o], result: { title: "Result", cols: ["OrderID","CustomerID","Sales"] },
+  steps: [
+    { note: "The engine has no way to know where customer 3's rows are. It must read <b>every row</b> from the top and test the condition." },
+    ...o.rows.map((r, i) => {
+      const mk = {}; for (let k = 0; k < i; k++) mk[k] = o.rows[k][1] === 3 ? "g" : "r"; mk[i] = "y";
+      return { note: "Read row " + (i + 1) + " (order " + r[0] + ", customer " + r[1] + "): " + (r[1] === 3 ? "<b>match</b>." : "no match.") + " Rows read so far: <b>" + (i + 1) + "</b>.", mark: { orders: mk }, add: r[1] === 3 ? [r] : [] };
+    }),
+    { note: "<b>10 rows read to return 2.</b> On a table of 100 million rows this would read all 100 million." }
+  ]
+};
+const ix = { id: "ix", title: "Index ix_Orders_CustomerID (sorted copy of the keys)", cols: ["CustomerID","points to OrderID"],
+  rows: [[1,1003],[1,1008],[2,1001],[2,1006],[2,1009],[3,1002],[3,1007],[4,1005],[4,1010],[6,1004]] };
+VIZ.seek = {
+  title: "WITH an index on CustomerID (index seek + lookups)",
+  tables: [ix, o], result: { title: "Result", cols: ["OrderID","CustomerID","Sales"] },
+  steps: [
+    { note: "The index keeps CustomerID <b>sorted</b>, each entry pointing to its row." },
+    { note: "<b>Seek:</b> the engine walks the B-tree (root &rarr; leaf: ~3 page reads) straight to the first entry with CustomerID = 3. It does not look at customers 1, 2 or 4.", mark: { ix: {5: "y"} } },
+    { note: "Entries for customer 3 are next to each other (sorted!), so it reads both and stops at the first key above 3.", mark: { ix: {5: "g", 6: "g", 7: "r"} } },
+    { note: "<b>Key lookups:</b> follow the pointers to fetch the remaining columns: order 1002 &hellip;", mark: { ix: {5: "g", 6: "g"}, orders: {1: "g"} }, add: [[1002,3,60]] },
+    { note: "&hellip; and order 1007.", mark: { ix: {5: "g", 6: "g"}, orders: {1: "g", 6: "g"} }, add: [[1007,3,40]] },
+    { note: "<b>Done:</b> only the 2 matching rows (plus a handful of index pages) were touched, however big the table is. A <b>covering index</b> would even skip these two lookups." }
+  ]
+};
+</script>
+</body></html>

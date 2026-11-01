@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NULL functions</title><link rel="stylesheet" href="../assets/style.css"></head>
+<body data-page="15-null-functions"><main>
+<h1>NULL functions</h1>
+<p class="lead">NULL means "unknown". It spreads through calculations and quietly changes your totals, so learn the tools that tame it.</p>
+<div class="goals"><b>After this topic you will</b> detect NULL, replace it with ISNULL and COALESCE, create NULL on purpose with NULLIF, and predict how NULL behaves in maths, aggregates, sorting, joins and constraints.</div>
+<div class="tbl" data-src="customers"></div>
+
+<h2>What NULL is (and is not)</h2>
+<table class="cmp">
+<tr><th>Value</th><th>Meaning</th></tr>
+<tr><td><code>NULL</code></td><td>no value / unknown / not applicable</td></tr>
+<tr><td><code>0</code></td><td>a real number zero</td></tr>
+<tr><td><code>''</code> (empty string)</td><td>a real, known text of length 0</td></tr>
+<tr><td><code>' '</code> (spaces)</td><td>a real text of spaces</td></tr>
+</table>
+<p>Anna's Score is NULL: we do not know it. It is <em>not</em> a score of 0.</p>
+
+<h2>NULL spreads</h2>
+<pre class="sql">
+SELECT 5 + NULL            -- NULL
+     , 'abc' + NULL        -- NULL
+     , NULL = NULL         -- not true (UNKNOWN)
+     , NULL IS NULL        -- true
+     , LEN(NULL)           -- NULL
+;
+</pre>
+<p>Anything combined with NULL by arithmetic or comparison becomes NULL / UNKNOWN. Use <code>IS NULL</code> / <code>IS NOT NULL</code> to test (topic 7).</p>
+
+<h2>ISNULL(x, replacement) and COALESCE(a, b, c, ...)</h2>
+<pre class="sql">
+SELECT FirstName,
+       ISNULL(LastName, 'n/a')                 AS Last1,      -- T-SQL only, exactly 2 arguments
+       COALESCE(LastName, FirstName, 'n/a')    AS Last2,      -- ANSI, any number: first non-NULL wins
+       ISNULL(Score, 0)                        AS ScoreOrZero
+FROM Customers;
+</pre>
+<div class="tbl" data-title="Result">
+FirstName | Last1 | Last2 | ScoreOrZero
+Jossef | Goldberg | Goldberg | 350
+Kevin | Brown | Brown | 900
+Mary | n/a | Mary | 750
+Mark | Schwarz | Schwarz | 500
+Anna | Adams | Adams | 0
+</div>
+<table class="cmp">
+<tr><th></th><th>ISNULL</th><th>COALESCE</th></tr>
+<tr><td>Standard</td><td>T-SQL only</td><td>ANSI: works in every database</td></tr>
+<tr><td>Arguments</td><td>exactly 2</td><td>2 or more</td></tr>
+<tr><td>Result type</td><td>type of the <b>first</b> argument (can truncate the replacement: <code>ISNULL(VarChar3Col, 'unknown')</code> gives 'unk')</td><td>highest-precedence type of all arguments</td></tr>
+<tr><td>Typical use</td><td>quick replace in SQL Server code</td><td>first non-empty of several columns (<code>COALESCE(Mobile, Home, Office)</code>)</td></tr>
+</table>
+
+<h2>NULL in aggregates: the silent total-changer</h2>
+<p>Aggregates (SUM, AVG, MIN, MAX, COUNT(column)) <b>ignore NULL</b>. <code>COUNT(*)</code> counts rows regardless.</p>
+<pre class="sql">
+SELECT COUNT(*)                AS Rows,          -- 5
+       COUNT(Score)            AS WithScore,     -- 4
+       SUM(Score)              AS Total,         -- 2500
+       AVG(Score)              AS AvgIgnoringNull,     -- 625   = 2500 / 4
+       AVG(ISNULL(Score, 0))   AS AvgNullAsZero        -- 500   = 2500 / 5
+FROM Customers;
+</pre>
+<div class="viz" data-id="avg"></div>
+<div class="callout key"><b>Decide deliberately</b>Is a missing value "unknown, leave it out" or "really zero"? An unpaid invoice with no payment date is a different story from a payment of 0. There is no universal answer; the business meaning decides.</div>
+
+<h2>NULLIF(a, b): turn a value INTO NULL</h2>
+<p>Returns NULL if a equals b, otherwise returns a. The classic use is to prevent a divide-by-zero error: dividing by NULL gives NULL, not an error.</p>
+<pre class="sql">
+SELECT 100 / NULLIF(0, 0);                    -- NULL, instead of "Divide by zero error"
+SELECT Sales / NULLIF(Quantity, 0) AS PricePerUnit FROM Orders;
+
+-- turn placeholder strings into proper NULLs
+SELECT NULLIF(LastName, '') FROM Customers;   -- '' becomes NULL
+</pre>
+
+<h2>Safe patterns</h2>
+<pre class="sql">
+-- Safe ratio, with default 0 when it cannot be calculated
+SELECT ISNULL(Sales / NULLIF(Quantity, 0), 0) FROM Orders;
+
+-- Full name without a stray space or NULL
+SELECT COALESCE(FirstName + ' ' + LastName, FirstName) FROM Customers;   -- Mary: 'Mary'
+
+-- Sort NULLs last (SQL Server puts NULL first in ASC)
+SELECT FirstName, Score FROM Customers
+ORDER BY CASE WHEN Score IS NULL THEN 1 ELSE 0 END, Score;
+
+-- Compare two columns where NULL counts as "equal to NULL"
+WHERE a = b OR (a IS NULL AND b IS NULL)
+</pre>
+
+<h2>NULL in joins and constraints</h2>
+<ul>
+<li>A NULL join key never matches anything, not even another NULL. Those rows disappear from INNER JOINs (topic 8).</li>
+<li><code>NOT IN</code> with a NULL in the list returns nothing (topic 7, 23).</li>
+<li>A <b>PRIMARY KEY</b> column can never be NULL; a <b>UNIQUE</b> column allows only one NULL in SQL Server (other databases allow many).</li>
+<li>A <b>CHECK</b> constraint passes when its condition is UNKNOWN, so NULL slips through <code>CHECK (Age &gt; 0)</code>. Add NOT NULL if the value is required.</li>
+<li><code>GROUP BY</code> and <code>DISTINCT</code> treat all NULLs as <b>one group</b>.</li>
+</ul>
+
+<h2>Find the dirty data</h2>
+<pre class="sql">
+-- how many NULL/blank values per column (a data-quality check)
+SELECT SUM(CASE WHEN LastName IS NULL THEN 1 ELSE 0 END) AS NullLast,
+       SUM(CASE WHEN Score    IS NULL THEN 1 ELSE 0 END) AS NullScore
+FROM Customers;                                   -- 1, 1
+</pre>
+
+<div class="ex"><b>Try it</b>
+<p>1) List orders not yet shipped with <code>IS NULL</code>. 2) Show ShipDate, replacing NULL with the text 'Pending' (careful: you must <code>CAST</code> the date to text first). 3) Compute average Score treating NULL as the average of the others. 4) Explain why <code>SELECT COUNT(LastName)</code> returns 4 and <code>COUNT(*)</code> returns 5.</p></div>
+</main>
+<script src="../assets/course.js"></script>
+<script>
+const sc = pick(D.customers, ["FirstName","Score"]);
+VIZ.avg = {
+  title: "AVG(Score) with and without NULL handling",
+  tables: [sc], result: { title: "Result", cols: ["Expression","Sum","Rows counted","Result"] },
+  steps: [
+    { note: "Five customers. Anna's Score is NULL." },
+    { note: "<b>AVG(Score)</b>: NULL is skipped entirely: sum = 350+900+750+500 = 2500, counted rows = <b>4</b>, average = 2500 / 4 = <b>625</b>.",
+      mark: { customers: { 0:"g",1:"g",2:"g",3:"g",4:"r" } }, result: [["AVG(Score)",2500,4,625]] },
+    { note: "<b>AVG(ISNULL(Score,0))</b>: Anna becomes 0 first, so she <em>is</em> counted: sum is still 2500, rows counted = <b>5</b>, average = 2500 / 5 = <b>500</b>.",
+      mark: { customers: { 0:"g",1:"g",2:"g",3:"g",4:"y" } }, result: [["AVG(Score)",2500,4,625],["AVG(ISNULL(Score,0))",2500,5,500]] },
+    { note: "Same data, two different 'averages'. Neither is wrong; they answer different questions. State which one you mean." }
+  ]
+};
+</script>
+</body></html>

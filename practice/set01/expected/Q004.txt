@@ -1,0 +1,4 @@
+﻿CustomerID|FirstName|City
+----------|---------|----
+3|Amit|Varanasi
+6|Chetan| varanasi
